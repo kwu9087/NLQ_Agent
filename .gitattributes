@@ -1,0 +1,2 @@
+# Keep raw TICKIT source files byte-for-byte identical to Amazon's originals
+data/raw/** -text

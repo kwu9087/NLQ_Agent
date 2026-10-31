@@ -1,0 +1,14 @@
+# Generated SQLite database (rebuilt from data/raw by the load script)
+data/*.db
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Exercise brief (proprietary to BSE; not for redistribution)
+*.pdf
