@@ -10,5 +10,6 @@ __pycache__/
 .venv/
 venv/
 
-# Exercise brief (proprietary to BSE; not for redistribution)
+# Third-party briefs and reference PDFs (not for redistribution)
+AI Engineer Candidate Exercise.pdf
 *.pdf
