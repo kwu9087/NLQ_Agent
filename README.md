@@ -2,7 +2,7 @@
 
 A natural language query (NLQ) agent that lets a non-technical user ask questions about ticketing data in plain English. The agent turns the question into SQL, runs it against a database, and returns a readable answer together with the SQL it ran.
 
-> **Status:** Draft. This README is being written part by part. **Part 1 (Data)** is below. Later parts (agent design, model choice, interface, error handling, setup) will be added as they are built.
+> **Status:** Draft. This README is being written part by part. **Part 1 (Data)** and **Part 2 (Data preparation)** are below. Later parts (agent design, model choice, interface, error handling, setup) will be added as they are built.
 
 ---
 
@@ -121,8 +121,9 @@ Highlights from exploring the raw files:
 | 7 | Several events can share a venue on the same day (matinee and evening shows), so venue and date do not identify one event. | 493 venue-days | **B**: easy to misread |
 | 8 | The sports categories (MLB, NHL, NFL, NBA, MLS) exist but have no events. | 5 categories | Coverage gap |
 | 9 | All activity is in 2008, so relative-date questions ("last month", "in 2024") return nothing. | All data | Coverage gap |
+| 10 | The `date` table has no row for Feb 29, 2008 (a leap day), and its `day` (weekday) field is one day off for every date in January and February. For example, Jan 1, 2008 was a Tuesday but is labeled `WE`. | 59 dates | **A**: data defect |
 
-Minor issues that do not affect results: 47 users have the first name misspelled as "acqueline", 5 sales have the same user as buyer and seller, and listing IDs have gaps (up to 235,497 for 192,497 rows), which suggests a cut-down sample.
+Minor issues that do not affect results: 47 users have the first name misspelled as "acqueline", 5 sales have the same user as buyer and seller, 2,965 sales have a `saletime` a few hours earlier than their listing's `listtime` (always on the same day), and listing IDs have gaps (up to 235,497 for 192,497 rows), which suggests a cut-down sample.
 
 ### How we handle the issues: clean the data vs. teach the agent
 
@@ -136,6 +137,7 @@ The issues fall into two kinds, and each kind is handled differently.
 | #2 Missing venues | Add placeholder rows ("Unknown venue") for IDs 12, 51 and 64 |
 | #3 `venueseats = 0` | Store as NULL (unknown) |
 | #4 File formats | Normalize line endings, delimiters, NULLs and timestamps to ISO 8601 |
+| #10 Wrong weekdays, missing leap day | Rebuild the calendar from the real dates, one row per day with no gaps |
 
 **Type B, correct data that is easy to misread: left as is and taught to the agent.** These values are accurate. They are simply easy to query wrongly. The agent learns about them through its context instead:
 
@@ -152,16 +154,102 @@ The issues fall into two kinds, and each kind is handled differently.
 
 **What we deliberately avoided:** having the agent detect and fix data problems by itself while it answers questions. It sounds appealing, but it is hard to verify, it can give different answers to the same question on different runs, and it hides why a number changed. Known issues are fixed once in the load step or written into the agent's instructions, never guessed at query time.
 
-### Planned data preparation
+---
 
-> **Not built yet.** This is the proposed approach for the load step.
+## Part 2: Data preparation
 
-A load script will read `data/raw/` and build a SQLite database at `data/tickit.db`. It will:
+The load step reads the untouched files in `data/raw/` and builds the SQLite database the agent queries, `data/tickit.db`. It applies the Type A fixes from Part 1 and closes the two coverage gaps (#8 and #9).
 
-1. **Apply the Type A fixes** listed above.
-2. **Close the coverage gaps (#8, #9).** These are enhancements, not bug fixes:
-   - **Shift dates forward** so the data covers recent dates and relative-date questions return results. The exact offset will be chosen when the script is built. Shifting by a whole number of weeks keeps weekday patterns intact. Shifting by whole years does not, so the `date` table's day and holiday fields would have to be recomputed.
-   - **Optionally add audience-specific demo data:** for example, a particular venue and a season of a team's home games, so a demo can use questions in the audience's own terms. Listings and sales would be generated to match TICKIT's existing price and volume distributions. Added rows will be flagged so they can be told apart from Amazon's original data.
+### Build the database
+
+Requires Python 3.10 or later. It uses only the standard library, so there is nothing to install.
+
+```bash
+python scripts/build_db.py
+```
+
+The build takes about 10 seconds and is deterministic: every run produces the same database. It ends by running consistency checks and exits with an error if any check fails:
+
+```
+Dates shifted by 888 weeks: 2025-01-07 to 2026-01-07
+Demo data added: 46 Nets home games, 2847 listings, 2393 sales
+...
+Consistency checks
+  ok   foreign keys resolve
+  ok   pricepaid = qtysold x priceperticket
+  ok   commission = 15% of pricepaid
+  ok   totalprice = numtickets x priceperticket
+  ok   sale matches its listing's event and seller
+  ok   no sale after its event day
+  ok   no listing after its event day
+  ok   event starttime matches its dateid
+  ok   no venue capacity of 0
+```
+
+### What the build does
+
+| Step | What it does | Code |
+|---|---|---|
+| 1. Parse | Reads each raw file and normalizes the formats (#4): strips CRLF and the stray `\r\r\n` endings, handles pipe and tab delimiters, turns `\N` and empty fields into NULL, turns `TRUE`/`FALSE` into 1/0, and parses `saletime` from `M/D/YYYY` | `load_tickit()` |
+| 2. Fix defects | Rebuilds `starttime` from the event's date (#1), adds "Unknown venue" rows for IDs 12, 51 and 64 (#2), stores `venueseats = 0` as NULL (#3) | `fix_defects()` |
+| 3. Shift dates | Moves every timestamp forward **888 weeks**, so the data runs from **2025-01-07 to 2026-01-07** instead of 2008 (#9). Rebuilds the `date` table from the real calendar, which fixes the weekdays and adds the missing leap day (#10) | `shift_dates()`, `build_calendar()` |
+| 4. Demo data | Adds Barclays Center and Brooklyn Nets home games (#8). See [Demo data](#demo-data-barclays-center-and-the-brooklyn-nets) | `scripts/demo_data.py` |
+| 5. Write and check | Creates the tables from `scripts/schema.sql` (primary keys, foreign keys, indexes), loads the rows and runs the consistency checks shown above | `write_db()`, `validate()` |
+
+### Date shift
+
+**Why whole weeks:** Shifting by a whole number of weeks keeps every date on the same weekday. Weekend and weekday patterns stay real, and a Saturday matinee is still on a Saturday. A whole-year shift (2008 to 2025) would move every event to a different weekday.
+
+**Why this range:** 888 weeks is the whole-week shift that puts the data closest to calendar 2025. Nearly all activity is in 2025, so questions like "in 2025" or "in Q3" behave as expected. The cost is that the last week spills into January 2026 (508 sales) and that the data ends 10 months before today, so "last month" still returns nothing. The agent will need to say what date range the data covers when a question falls outside it.
+
+**What changed in the `date` table:**
+
+- `dateid` is now the date as an integer in `YYYYMMDD` form (for example `20250315`). TICKIT's original IDs (1827–2191) were arbitrary and had a gap at the missing leap day. The new IDs are readable and can't collide.
+- `day`, `week`, `month`, `qtr` and `year` are computed from the date. Weeks start on Monday, and week 1 is the week that contains January 1, which matches TICKIT's original numbering.
+- `holiday` is recomputed for the new dates, using the same holidays TICKIT flagged in 2008: New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, Christmas Day and the day after Christmas.
+- `listing.dateid`, `sales.dateid` and `event.dateid` are derived from `listtime`, `saletime` and `starttime`. This matches the raw data, where they always agree.
+
+### Demo data: Barclays Center and the Brooklyn Nets
+
+The brief's example questions ask about Brooklyn Nets home games and Barclays Center. TICKIT has neither, and none of its sports categories has any events. The build adds:
+
+| Added | Details |
+|---|---|
+| 1 venue | Barclays Center, Brooklyn, NY, 17,732 seats (`venueid` 310) |
+| 46 events | Brooklyn Nets home games (category NBA), named like `Brooklyn Nets vs. Boston Celtics`. They cover the two parts of NBA seasons that fall inside the data range: January–April 2025 (2024–25 season) and late October 2025–January 2026 (2025–26 season). There is one game every 2–6 days, as in a real 41-game home schedule. Weeknight tip-off is 19:30. Weekend games are at 15:30 or 18:00. |
+| 2,847 listings, 2,393 sales | Copied from real TICKIT activity (see below) |
+
+**How listings and sales are generated:** Rather than inventing distributions, each game copies the listings and sales of three randomly chosen TICKIT events. Every listing and sale keeps its distance from the event date, its ticket counts, its seller and buyer, and the way a listing splits into separate sales. Only the price changes. The new price is the original price × an opponent demand factor (Knicks 1.8, Lakers 1.7, … Wizards 0.75) × a random ±10%, rounded to whole dollars. Totals and the 15% commission are recalculated, so the generated rows pass every consistency check that TICKIT's own rows pass. Like TICKIT itself, there is no activity before the first day of the data. Listings that would fall earlier are dropped.
+
+**How to tell demo rows apart:** `venue`, `event`, `listing` and `sales` each have an `is_demo` column, which is `1` for generated rows and `0` for Amazon's originals. Filtering on `is_demo = 0` gives the original TICKIT data (date-shifted and cleaned). The generator is seeded, so the demo data is the same on every build.
+
+**Known limitations of the demo data:**
+
+- A Nets game averages about 107 tickets sold, compared with about 41 for a TICKIT event. That reflects higher demand, but both are far below a real arena's sales. TICKIT is a small resale marketplace, not a primary ticketing system.
+- Prices follow TICKIT's very wide range ($20–$2,500 per ticket) and depend on which events were copied, so one game's average price can be far from another's even against similar opponents.
+- The schedule, opponents and prices are made up. Only the team, the venue and its capacity are real.
+
+### Result
+
+| Table | Rows | Of which demo |
+|---|---:|---:|
+| `category` | 11 | 0 |
+| `venue` | 206 | 1 |
+| `date` | 366 | n/a |
+| `users` | 49,990 | 0 |
+| `event` | 8,844 | 46 |
+| `listing` | 195,344 | 2,847 |
+| `sales` | 174,849 | 2,393 |
+
+The three example questions in the brief now return data:
+
+| Question | Result (abbreviated) |
+|---|---|
+| Tickets sold for Brooklyn Nets home games, by month | 83 (Jan 2025), 398, 993, 452 (Apr), 192 (Oct), 1,130, 1,308 (Dec), 254 (Jan 2026) |
+| Barclays Center events with the highest average ticket price in 2025 | Nets vs. 76ers (Feb 5) $1,149.71, Nets vs. Rockets (Jan 20) $1,007.80, Nets vs. Celtics (Feb 25) $695.92 |
+| Top 5 event categories by total revenue | Pop $62.4M, Plays $25.5M, Musicals $16.3M, Opera $6.5M, NBA $1.6M |
+
+As written in the brief, the first two questions say "last month" and "in 2024", and both still fall outside the data range. Handling them is the agent's job: it should say what range the data covers rather than return an empty answer.
 
 ### Repository layout (so far)
 
@@ -169,7 +257,11 @@ A load script will read `data/raw/` and build a SQLite database at `data/tickit.
 NLQ_Agent/
 ├── data/
 │   ├── raw/          # Unmodified TICKIT source files (committed)
-│   └── tickit.db     # Built by the load script (git-ignored)
+│   └── tickit.db     # Built by scripts/build_db.py (git-ignored)
+├── scripts/
+│   ├── build_db.py   # Load step: parse, fix, shift dates, add demo data, write and check
+│   ├── demo_data.py  # Barclays Center and Brooklyn Nets demo data generator
+│   └── schema.sql    # SQLite schema for data/tickit.db
 ├── .gitattributes    # Keeps raw files byte-identical (no line-ending conversion)
 ├── .gitignore
 └── README.md
