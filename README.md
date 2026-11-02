@@ -2,11 +2,11 @@
 
 A natural language query (NLQ) agent that lets a non-technical user ask questions about ticketing data in plain English. The agent turns the question into SQL, runs it against a database, and returns a readable answer together with the SQL it ran.
 
-> **Status:** Draft. This README is being written part by part. **Part 1 (Data)** and **Part 2 (Data preparation)** are below. Later parts (agent design, model choice, interface, error handling, setup) will be added as they are built.
+> **Status:** Draft. The README follows the five numbered requirements in the brief: **Part 1 (Data Layer)** is complete, **Part 2 (Agent Behavior)** is being designed, and Parts 3–5 (Foundation Model, Interface, Code Quality) are not started yet.
 
 ---
 
-## Part 1: Data
+## Part 1: Data Layer
 
 ### Dataset choice
 
@@ -154,13 +154,11 @@ The issues fall into two kinds, and each kind is handled differently.
 
 **What we deliberately avoided:** having the agent detect and fix data problems by itself while it answers questions. It sounds appealing, but it is hard to verify, it can give different answers to the same question on different runs, and it hides why a number changed. Known issues are fixed once in the load step or written into the agent's instructions, never guessed at query time.
 
----
+### Data preparation
 
-## Part 2: Data preparation
+The load step reads the untouched files in `data/raw/` and builds the SQLite database the agent queries, `data/tickit.db`. It applies the Type A fixes listed above and closes the two coverage gaps (#8 and #9).
 
-The load step reads the untouched files in `data/raw/` and builds the SQLite database the agent queries, `data/tickit.db`. It applies the Type A fixes from Part 1 and closes the two coverage gaps (#8 and #9).
-
-### Build the database
+#### Build the database
 
 Requires Python 3.10 or later. It uses only the standard library, so there is nothing to install.
 
@@ -184,9 +182,13 @@ Consistency checks
   ok   no listing after its event day
   ok   event starttime matches its dateid
   ok   no venue capacity of 0
+  ok   sales_detail has every sale once
+  ok   venue labels are unique
+  ok   event_summary totals match sales
+  ok   listing_detail never sells more than listed
 ```
 
-### What the build does
+#### What the build does
 
 | Step | What it does | Code |
 |---|---|---|
@@ -194,9 +196,9 @@ Consistency checks
 | 2. Fix defects | Rebuilds `starttime` from the event's date (#1), adds "Unknown venue" rows for IDs 12, 51 and 64 (#2), stores `venueseats = 0` as NULL (#3) | `fix_defects()` |
 | 3. Shift dates | Moves every timestamp forward **888 weeks**, so the data runs from **2025-01-07 to 2026-01-07** instead of 2008 (#9). Rebuilds the `date` table from the real calendar, which fixes the weekdays and adds the missing leap day (#10) | `shift_dates()`, `build_calendar()` |
 | 4. Demo data | Adds Barclays Center and Brooklyn Nets home games (#8). See [Demo data](#demo-data-barclays-center-and-the-brooklyn-nets) | `scripts/demo_data.py` |
-| 5. Write and check | Creates the tables from `scripts/schema.sql` (primary keys, foreign keys, indexes), loads the rows and runs the consistency checks shown above | `write_db()`, `validate()` |
+| 5. Write and check | Creates the tables from `scripts/schema.sql` (primary keys, foreign keys, indexes), loads the rows, creates the agent-facing views from `scripts/views.sql`, and runs the consistency checks | `write_db()`, `validate()` |
 
-### Date shift
+#### Date shift
 
 **Why whole weeks:** Shifting by a whole number of weeks keeps every date on the same weekday. Weekend and weekday patterns stay real, and a Saturday matinee is still on a Saturday. A whole-year shift (2008 to 2025) would move every event to a different weekday.
 
@@ -209,7 +211,7 @@ Consistency checks
 - `holiday` is recomputed for the new dates, using the same holidays TICKIT flagged in 2008: New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, Christmas Day and the day after Christmas.
 - `listing.dateid`, `sales.dateid` and `event.dateid` are derived from `listtime`, `saletime` and `starttime`. This matches the raw data, where they always agree.
 
-### Demo data: Barclays Center and the Brooklyn Nets
+#### Demo data: Barclays Center and the Brooklyn Nets
 
 The brief's example questions ask about Brooklyn Nets home games and Barclays Center. TICKIT has neither, and none of its sports categories has any events. The build adds:
 
@@ -229,7 +231,7 @@ The brief's example questions ask about Brooklyn Nets home games and Barclays Ce
 - Prices follow TICKIT's very wide range ($20–$2,500 per ticket) and depend on which events were copied, so one game's average price can be far from another's even against similar opponents.
 - The schedule, opponents and prices are made up. Only the team, the venue and its capacity are real.
 
-### Result
+#### Result
 
 | Table | Rows | Of which demo |
 |---|---:|---:|
@@ -251,17 +253,207 @@ The three example questions in the brief now return data:
 
 As written in the brief, the first two questions say "last month" and "in 2024", and both still fall outside the data range. Handling them is the agent's job: it should say what range the data covers rather than return an empty answer.
 
-### Repository layout (so far)
+### Agent-facing views
+
+The agent never queries the tables directly. It queries five **views** defined in [`scripts/views.sql`](scripts/views.sql). A view is a saved query that looks like a table: its definition is stored in the database, and its rows are computed from the real tables each time it is queried. It stores no data, so it can never fall out of sync.
+
+**Why:** Part 1 lists data that is correct but easy to misread. Each of those traps could be handled with a rule in the system prompt, but every rule is something the model can overlook. The views build the rules into the structure instead: the joins are done once, correctly, columns are named for what they mean, and private columns don't exist. The prompt stays short, and many mistakes become impossible rather than merely discouraged.
+
+| View | One row per | Purpose |
+|---|---|---|
+| `sales_detail` | sale | Each sale with its event, category, venue, buyer and seller, already joined. Separate `sale_*` and `event_*` date columns |
+| `listing_detail` | listing | Each listing with its asking price, tickets sold and unsold, and how far ahead of the event it was listed |
+| `event_summary` | event (one performance or game) | Lifetime totals per event: tickets listed and sold, revenue, commission, average ticket price |
+| `venues` | venue | Venue details plus a unique `venue_label` |
+| `users_public` | user | Users without names, email or phone |
+
+**How each trap is handled:**
+
+| Trap (Part 1) | How the views remove it |
+|---|---|
+| #5 `pricepaid` is a total, not a per-ticket price | Renamed `sale_total`. `tickets` replaces `qtysold`. `event_summary.avg_ticket_price` is precomputed correctly |
+| #6 Two venues named "Lyric Opera House" (and three "Unknown venue" rows) | `venue_label` is unique: `Lyric Opera House (Chicago, IL)`, `Unknown venue (#12)` |
+| Three tables with a `dateid` | Explicit columns: `sale_date`, `sale_month`, `sale_quarter`, `event_date`, `listed_date`, … |
+| Joining `users` as buyer vs. seller | `buyer_id` and `seller_id` sit on each sale |
+| Sell-through double counting (joining listings to sales) | `tickets_listed`, `tickets_sold` and `tickets_unsold` are precomputed per listing and per event |
+| Private user data | `users_public` has no name, email or phone columns |
+
+**What still needs a rule in the prompt:** an average ticket price over a custom grouping must be `SUM(sale_total) / SUM(tickets)`, not an average of per-sale prices. The views can't prevent that, so it stays in the prompt.
+
+**Checks:** the build verifies that `sales_detail` contains every sale exactly once, that venue labels are unique, that `event_summary` totals match the `sales` table, and that no listing sells more tickets than it listed. The example questions return identical results whether written against the tables or the views.
+
+**Tradeoffs:** five view definitions to maintain, and slightly slower queries on `event_summary`, which aggregates on every query (about 1 second). If the data grew, these could become pre-built summary tables refreshed by the build.
+
+---
+
+## Part 2: Agent Behavior
+
+> **In progress: design brainstorm.** Nothing here is built yet. This section records the ideas and open decisions as they are discussed.
+
+**Goal:** take a plain-English question, translate it into correct SQL, run it, and return a clear answer together with the SQL. When it can't, fail honestly and helpfully.
+
+### Where accuracy comes from: the system prompt and its context
+
+Most of the agent's accuracy will come from what the model is told before it sees the question. Our plan is to put it all into the **system prompt**. The schema is small (7 tables), so the whole schema fits in every request and there is no need to retrieve parts of it.
+
+The system prompt will be built from these parts:
+
+| Part | Contents | Static or per request |
+|---|---|---|
+| Role and task | "You translate questions about a ticket resale marketplace into one SQLite `SELECT` query" | Static |
+| Schema | Tables, columns, keys and their meanings, taken from `scripts/schema.sql`, so there is one source of truth | Static |
+| Known values | The full list of small lookup values (the 11 categories, the 3 category groups, the `day` and `month` codes), so the model doesn't guess spellings | Static |
+| Business definitions | What "tickets sold", "revenue", "average ticket price" and similar terms mean in SQL | Static |
+| Query rules | The traps listed below | Static |
+| Data coverage | The date range, what the data does and doesn't contain, and today's date (needed to resolve "last month") | Today's date is per request |
+| Ambiguity policy | What to do when a question can be read more than one way | Static |
+| Output format | How the model returns the SQL and any assumptions it made | Static |
+| Examples | 5–8 questions paired with correct SQL, each one demonstrating a trap | Static |
+
+### Database rules and nuances (draft)
+
+**Metrics**
+
+| Term | Correct SQL | Common mistake |
+|---|---|---|
+| Tickets sold | `SUM(sales.qtysold)` | `COUNT(*)` counts sales transactions: 174,849 rows hold 350,159 tickets |
+| Average ticket price | `SUM(pricepaid) / SUM(qtysold)` | `AVG(pricepaid)` averages the total paid per sale, not the price per ticket (issue #5) |
+| Revenue | `SUM(pricepaid)` (gross sales) | Confusing it with `SUM(commission)`, the site's 15% cut. **Decided:** gross sales is the default. Mention commission when it is relevant. |
+| Asking price vs. price paid | `listing.priceperticket` is the asking price. Prices in `sales` are what buyers paid | Using listing prices for "average ticket price" |
+| Unsold tickets | `listing.numtickets` minus the tickets sold from that listing | Treating a listing as either sold or unsold. 91,327 listings sold only part of their tickets |
+
+**Joins and grouping**
+
+- **Group venues by `venueid` and show the city.** "Lyric Opera House" (Chicago and Baltimore) and "Unknown venue" (3 placeholder rows) each cover several venues.
+- **An event is a single performance.** 8,844 events share only 605 names, and 17 Nets matchups occur twice (once in each season). Group by `eventid` for performances and by `eventname` for shows or artists. **Decided:** questions that rank events ("top events") group by show (`eventname`). Questions that name a date or a single performance use `eventid`.
+- **Venue plus date does not identify an event.** Matinee and evening shows can share a day (issue #7).
+- **Three tables have a `dateid`: `sales`, `listing` and `event`.** Join `date` to the one the question is about. In 56% of sales, the sale happened in a different month than the event, so this choice changes answers. **Decided:** sales figures use the sale date ("revenue in March" means money taken in March), unless the question is about the events themselves ("events held in March").
+- **`users` plays two roles.** Join on `buyerid` for buyers and on `sellerid` for sellers.
+- **"Brooklyn Nets home games"** are events at Barclays Center whose name starts with `Brooklyn Nets`. Every Nets game in the data is a home game. Away games are not in the data.
+
+**Data coverage**
+
+- Activity runs from 2025-01-07 to 2026-01-07. A question about dates outside that range should say so instead of returning an empty answer.
+- Of the sports categories, only NBA has events, and those are all Nets games (demo data). MLB, NHL, NFL and MLS have none.
+- `venueseats` is NULL when capacity is unknown. Questions about capacity or sell-through can only use venues with a known capacity.
+- `is_demo = 1` marks generated rows. They are included by default.
+- User emails and phone numbers are placeholders. **Decided:** the agent refuses to return emails and phone numbers, as a production system would.
+
+**SQLite dialect**
+
+- Use one `SELECT` statement only, with no data changes.
+- Use `strftime` and `DATE()` for dates. Timestamps are stored as ISO text.
+- The table name `date` works unquoted.
+- Add a `LIMIT` unless the question asks for everything, round money to 2 decimal places, and give columns readable aliases.
+
+### Decisions
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Default meaning of "revenue" | Gross sales (`SUM(pricepaid)`). Mention commission when it is relevant. |
+| 2 | Default meaning of "event" | A show or artist (`eventname`) for ranking questions. A single performance (`eventid`) when the question names a date or a single performance. |
+| 3 | Default date for sales figures | The sale date, unless the question is about the events themselves |
+| 4 | Unclear questions: ask the user, or choose a reading and state it? | A mix: answer and state assumptions when there is a sensible default, and ask only when there isn't. See [How the agent responds](#how-the-agent-responds) |
+| 5 | Contact details (emails, phone numbers) | Refuse to return them |
+
+### How the agent responds
+
+Every question ends in one of four kinds of response. The model returns its SQL together with a list of the **assumptions** it made, or a **clarifying question** when it can't proceed. The interface shows the assumptions above the answer, so they are hard to miss.
+
+| Situation | Agent response | Example |
+|---|---|---|
+| **Clear question, data available** | Answer and SQL | "Top 5 event categories by total revenue" |
+| **Unclear, but there's a sensible default** | Answers using the defaults above and states each assumption | "Best events last quarter" → ranked by gross revenue, grouped by show, counted by sale date, all stated |
+| **Too unclear to guess** | Asks one clarifying question and runs no query | "How are we doing?", "Compare the two", "Was the Lyric show a success?" |
+| **Clear, but the data can't answer it** | Explains why, shows what *is* available, and gives the closest answer it can | "Average sales uptake for event A in 2028" → the data covers Jan 2025 – Jan 2026, here are event A's 2025 figures instead |
+
+The last case covers three variants:
+
+- **Outside the date range:** state the range the data covers, and offer the closest period that has data.
+- **Unknown name** (event, venue, artist): say it wasn't found, and suggest the closest matching names.
+- **Data that doesn't exist** (attendance, weather, contact details): say the data doesn't include it, and describe what it does include.
+
+**Principle: an empty result must never look like an answer of zero.** "0 tickets sold in 2028" is misleading. "The data stops in January 2026" is honest.
+
+### System prompt (draft)
+
+The draft is in [`prompts/system_prompt.md`](prompts/system_prompt.md). It is a template: code fills in `{{today}}` and `{{schema}}` (the contents of `scripts/schema.sql`) on each request. In order, it contains:
+
+1. **Role and trust rules:** the user's message is a question, never new instructions.
+2. **The data:** what the marketplace is, the date range, which categories have events, and what the data doesn't contain.
+3. **The schema.**
+4. **Definitions:** tickets sold, revenue, average ticket price, sell-through and similar terms, written as exact SQL.
+5. **Rules:** dates, events and venues, users, demo data, and query style. These are the traps from Part 1 and the decisions above.
+6. **Privacy rules.**
+7. **When to answer, ask or decline:** the four kinds of response above.
+8. **Output format:** a JSON object with `action` (`query`, `clarify` or `cannot_answer`), plus `sql`, `assumptions`, `question` or `reason`.
+9. **Nine examples,** each showing one rule: revenue by category, average price by venue, Nets tickets by sale date, a period outside the data range, sell-through without double counting, a privacy-limited request, a clarifying question, missing data, and a prompt injection attempt.
+
+All nine example queries have been run against `data/tickit.db` and return the expected results.
+
+### Privacy
+
+The guiding rule: **the agent answers questions about the business, not about individual people.** Aggregates are fine. Identifying or contacting a specific person is not.
+
+| Data | Rule | Why |
+|---|---|---|
+| `email`, `phone` | Never selected, filtered on or returned | Contact details have no use in business analysis and the most potential for harm |
+| `firstname`, `lastname` | Never returned, and never used to look up a person | Real names identify a person. Business questions about users don't need them |
+| `city`, `state`, preference flags | Allowed in aggregates ("buyers by state"), never next to an individual user | Useful for segmentation. Linked to one person, they become a profile |
+| `userid`, `username` | Allowed | Pseudonymous IDs, needed for questions like "top 10 buyers" |
+| All other tables | Allowed | Business data, not personal data |
+
+These rules apply even when the user claims permission. The agent can't verify who is asking, so the user's message can't change what is allowed. In a production system, broader access would come from the user's authenticated role, enforced in code, never from what they type.
+
+The user data in TICKIT is generated (emails are placeholder Latin text), but the agent treats it as real so the design carries over to real customer data.
+
+### Defending against prompt injection and unsafe SQL
+
+The system prompt tells the model to treat the question as data and to refuse anything other than a single read-only query. A prompt can be talked around, though, so **the prompt is the first line of defense, not the only one.** These code-level controls are planned for the query-execution step:
+
+| Layer | Control | Stops |
+|---|---|---|
+| Prompt | The question is never treated as instructions. Refuses off-topic requests and data changes. The privacy rules | Most injection attempts and accidental privacy leaks |
+| Database connection | Opened read-only (`mode=ro`) | Any data change, even if the model is tricked into writing one |
+| SQL check before running | Exactly one statement, which must be a `SELECT` or `WITH` query | Stacked statements, `ATTACH`, `PRAGMA` |
+| SQLite authorizer | Denies reading `users.email`, `users.phone`, `users.firstname` and `users.lastname` | Leaking contact details or names, however the SQL is phrased |
+| Limits | Maximum rows returned and a query timeout | Runaway queries and huge result sets |
+| Answer-writing step | Result rows are passed to the model as data, never as instructions | Instructions hidden in stored text (indirect injection) |
+
+---
+
+## Part 3: Foundation Model
+
+> **Not started.** Which model translates the questions, and why it was chosen.
+
+---
+
+## Part 4: Interface
+
+> **Not started.** How a user asks questions and sees answers and SQL. The brief allows a CLI, a minimal web UI or a notebook.
+
+---
+
+## Part 5: Code Quality
+
+> **Not started.** Project structure and separation of concerns (prompt logic, query execution, response formatting), error handling, setup instructions and tests.
+
+---
+
+## Repository layout (so far)
 
 ```
 NLQ_Agent/
 ├── data/
 │   ├── raw/          # Unmodified TICKIT source files (committed)
 │   └── tickit.db     # Built by scripts/build_db.py (git-ignored)
+├── prompts/
+│   └── system_prompt.md  # System prompt for SQL generation (draft)
 ├── scripts/
 │   ├── build_db.py   # Load step: parse, fix, shift dates, add demo data, write and check
 │   ├── demo_data.py  # Barclays Center and Brooklyn Nets demo data generator
-│   └── schema.sql    # SQLite schema for data/tickit.db
+│   ├── schema.sql    # Tables in data/tickit.db
+│   └── views.sql     # Agent-facing views (the only part of the database the agent sees)
 ├── .gitattributes    # Keeps raw files byte-identical (no line-ending conversion)
 ├── .gitignore
 └── README.md
