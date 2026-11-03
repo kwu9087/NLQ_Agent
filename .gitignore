@@ -13,3 +13,7 @@ venv/
 # Third-party briefs and reference PDFs (not for redistribution)
 AI Engineer Candidate Exercise.pdf
 *.pdf
+
+# Local Claude Code skills and settings (developer tooling, not part of the project)
+.claude/
+skills-lock.json

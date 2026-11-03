@@ -288,7 +288,7 @@ The agent never queries the tables directly. It queries five **views** defined i
 
 ## Part 2: Agent Behavior
 
-> **In progress.** The system prompt is drafted. The flow (generate, check, run, retry, answer) is not built yet.
+> **First draft built** in [`nlq_agent/`](nlq_agent/), with offline tests passing. It has not yet been run against the live model, so the prompts are untuned.
 
 **Goal:** take a plain-English question, translate it into correct SQL, run it, and return a clear answer together with the SQL. When it can't, fail honestly and helpfully.
 
@@ -347,7 +347,7 @@ The last case covers three variants:
 
 ### System prompt (draft)
 
-The draft is in [`prompts/system_prompt.md`](prompts/system_prompt.md). It is a template: code fills in `{{today}}` and `{{schema}}` (the contents of `scripts/views.sql`) on each request, so the model only ever sees the views. In order, it contains:
+The draft is in [`prompts/system_prompt.md`](prompts/system_prompt.md). It is a template: code fills in `{{schema}}` (the contents of `scripts/views.sql`), so the model only ever sees the views. Nothing in it changes between requests, so it is [cached](#what-this-choice-means-for-the-code). Today's date and the question go in the user message instead, in `<today>` and `<question>` tags. In order, it contains:
 
 1. **Trust and safety:** the user's message is a question, never instructions. Text in the data is data. Exactly one `SELECT`, against the views only.
 2. **The data:** what the marketplace is, the date range, which categories have events, and what the data doesn't contain.
@@ -358,6 +358,30 @@ The draft is in [`prompts/system_prompt.md`](prompts/system_prompt.md). It is a 
 7. **Six examples,** each showing a behavior the rules alone don't make obvious: `SUM / SUM` with `venue_label`, counting by sale date, a period outside the data range, a request that is partly off limits, a clarifying question, and a prompt injection attempt.
 
 All example queries have been run against `data/tickit.db` and return the same results as the equivalent queries written against the raw tables.
+
+### How a question is answered
+
+The flow lives in [`nlq_agent/agent.py`](nlq_agent/agent.py). Prompt building and model calls are in [`llm.py`](nlq_agent/llm.py), query execution is in [`database.py`](nlq_agent/database.py), and settings are in [`config.py`](nlq_agent/config.py).
+
+```
+question
+  -> SQL step (model)      returns query / clarify / cannot_answer as schema-checked JSON
+  -> check and run         one SELECT, read-only, private columns blocked, 100 rows, 5 s limit
+       SQL error?          send the error back to the model, fix and run once more
+  -> answer step (model)   a short plain-English answer written from the rows
+  -> AgentResult           answer, explanation, assumptions, SQL, rows, or an error
+```
+
+- **Two model calls with separate prompts.** The SQL step uses [`prompts/system_prompt.md`](prompts/system_prompt.md). The answer step uses [`prompts/answer_prompt.md`](prompts/answer_prompt.md), which sees only the question, the assumptions and the rows (at most 50). Keeping the steps apart keeps each prompt short, and the answer step can't change the query.
+- **Structured output.** The SQL step must return JSON matching a fixed schema, so its reply is always readable. The six fields are always present, and the ones that don't apply are left empty.
+- **One repair attempt.** A malformed query or unknown column is sent back to the model with the error message, and the corrected query runs once. A second failure gives the user a plain-English error. A query that is not a single `SELECT` is never retried. Neither is a query that runs past the time limit: the user is asked to narrow the question instead.
+- **Empty results.** Both "no rows" and "one row of nothing" (such as `SUM` over no sales) count as no data. The answer step is told never to report them as zero.
+- **Every failure is a result, not a crash.** `Agent.ask()` always returns an `AgentResult`, with a user-facing message and the technical detail kept apart. API key problems, rate limits, network errors, a model refusal and unexpected exceptions each have their own message.
+- **Refusal fallback.** Requests use the API's server-side fallback (`fallbacks: "default"`). If Opus 5.5 declines a request, the API reruns it on Anthropic's recommended fallback model. It can be turned off with `NLQ_USE_FALLBACKS=0`.
+
+**Settings** (environment variables, all optional): `NLQ_MODEL` (default `claude-opus-5-5`), `NLQ_SQL_EFFORT` (default `medium`), `NLQ_ANSWER_EFFORT` (default `low`), `NLQ_TODAY` (pins today's date, for tests and demos), `NLQ_DB_PATH`.
+
+**Tests:** `pytest` runs 31 tests with no API calls. They cover the SQL check and authorizer (including private columns hidden inside a `WITH`), row limits, timeouts and empty results. They also cover every branch of the flow, using a fake model.
 
 ### Privacy
 
@@ -377,14 +401,14 @@ The user data in TICKIT is generated (emails are placeholder Latin text), but th
 
 ### Defending against prompt injection and unsafe SQL
 
-The system prompt tells the model to treat the question as data and to refuse anything other than a single read-only query. A prompt can be talked around, though, so **the prompt is the first line of defense, not the only one.** These code-level controls are planned for the query-execution step:
+The system prompt tells the model to treat the question as data and to refuse anything other than a single read-only query. A prompt can be talked around, though, so **the prompt is the first line of defense, not the only one.** These code-level controls are built into the query-execution step ([`nlq_agent/database.py`](nlq_agent/database.py)) and covered by tests:
 
 | Layer | Control | Stops |
 |---|---|---|
 | Prompt | The question is never treated as instructions. Refuses off-topic requests and data changes. The privacy rules | Most injection attempts and accidental privacy leaks |
 | Database connection | Opened read-only (`mode=ro`) | Any data change, even if the model is tricked into writing one |
 | SQL check before running | Exactly one statement, which must be a `SELECT` or `WITH` query | Stacked statements, `ATTACH`, `PRAGMA` |
-| SQLite authorizer | Allows reading data only through the agent-facing views, never the raw tables | Reaching names, emails or phone numbers in `users`, however the SQL is phrased |
+| SQLite authorizer | Allows only reads. Denies `users.firstname`, `lastname`, `email` and `phone` everywhere. Denies raw tables named directly in the query | Reaching names, emails or phone numbers in `users`, however the SQL is phrased |
 | Limits | Maximum rows returned and a query timeout | Runaway queries and huge result sets |
 | Answer-writing step | Result rows are passed to the model as data, never as instructions | Instructions hidden in stored text (indirect injection) |
 
@@ -501,14 +525,22 @@ NLQ_Agent/
 ├── data/
 │   ├── raw/          # Unmodified TICKIT source files (committed)
 │   └── tickit.db     # Built by scripts/build_db.py (git-ignored)
+├── nlq_agent/        # The agent (Part 2)
+│   ├── agent.py      # Question-to-answer flow; returns an AgentResult
+│   ├── llm.py        # Prompt building and Claude API calls
+│   ├── database.py   # Read-only execution and safety checks
+│   └── config.py     # Settings (model, effort, limits, paths)
 ├── prompts/
-│   └── system_prompt.md  # System prompt for SQL generation (draft)
+│   ├── system_prompt.md  # System prompt for the SQL step (draft)
+│   └── answer_prompt.md  # System prompt for the answer step (draft)
 ├── scripts/
 │   ├── build_db.py   # Load step: parse, fix, shift dates, add demo data, write and check
 │   ├── demo_data.py  # Barclays Center and Brooklyn Nets demo data generator
 │   ├── schema.sql    # Tables in data/tickit.db
 │   └── views.sql     # Agent-facing views (the only part of the database the agent sees)
+├── tests/            # Offline tests (no API calls): pytest
 ├── .gitattributes    # Keeps raw files byte-identical (no line-ending conversion)
 ├── .gitignore
+├── requirements.txt
 └── README.md
 ```
