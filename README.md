@@ -392,7 +392,38 @@ The system prompt tells the model to treat the question as data and to refuse an
 
 ## Part 3: Foundation Model
 
-> **Not started.** Which model translates the questions, and why it was chosen.
+**Choice: Claude Opus 5.5 (`claude-opus-5-5`), called through the Anthropic API.** The model name is a config setting, so the agent can be switched to another Claude model without code changes.
+
+### Options considered
+
+The brief allows three kinds of model:
+
+| Option | Pros | Cons |
+|---|---|---|
+| **Anthropic Claude** (direct API or Amazon Bedrock) | Strong at SQL and at following detailed rules. Can be forced to return JSON that matches a schema, which fits our `query` / `clarify` / `cannot_answer` format. Repeated system prompts can be cached, which cuts cost and response time | Needs an API key. Questions and result rows are sent to Anthropic |
+| **OpenAI GPT** | Similar quality, and also supports JSON schemas | Same API key and data-sharing trade-offs as Claude, with no clear advantage for this task |
+| **Open-source model run locally** (e.g. a Qwen or Llama coding model) | No API key, no cost per question, and the data never leaves the machine | The reviewer has to install a model runtime and download several GB. Noticeably weaker at following our rules and privacy instructions, and the JSON output is less reliable. Slower on a laptop |
+
+Within Claude, there are three tiers. Prices are per million tokens, input / output, as of November 2026:
+
+| Model | Price | Fit for this agent |
+|---|---|---|
+| **Opus 5.5** | $4 / $20 | The most accurate, and the best at handling unclear questions and refusing correctly |
+| Sonnet 5.5 | $2 / $10 | Close in quality, at half the price |
+| Haiku 5.5 | $0.10 / $0.50 | Very cheap and fast. More likely to miss a rule, such as computing average price as `SUM / SUM` or handling the date range |
+
+### Why Opus 5.5
+
+- **Accuracy matters most.** The brief scores SQL accuracy and the handling of unclear questions most heavily. The mistakes this agent must avoid, such as a wrong average or an empty result shown as zero, look correct, so we chose the most reliable model.
+- **Cost is not a deciding factor at this scale.** Each question makes two model calls (write the SQL, then write the answer), with roughly 3–4K input tokens each. That comes to about 5¢ per question on Opus 5.5, about 2¢ on Sonnet 5.5 and a fraction of a cent on Haiku 5.5, before caching lowers all three.
+- **Easy setup for a reviewer.** It needs only `pip install anthropic` and an API key. There is no local model to install.
+- **Not locked in.** Because the model name is a config setting, the same test questions can be run on Sonnet 5.5 and Haiku 5.5. Whether a cheaper model holds up is a measurement to make, not something to assume.
+
+### What this choice means for the code
+
+- **Thinking can't be turned off on Opus 5.5.** The control is the effort level (`low`, `medium` or `high`). We will choose it by running the test questions at each level.
+- **Prompt caching depends on the order of the prompt.** The cache only reuses the part of the prompt that comes before the first change. So the unchanging part (rules, schema and examples) goes first, and anything that changes per request, such as today's date, goes at the end or in the user message.
+- **Structured output.** The response is required to match a JSON schema, so the code never has to parse free-form text.
 
 ---
 
