@@ -354,7 +354,7 @@ The draft is in [`prompts/system_prompt.md`](prompts/system_prompt.md). It is a 
 3. **The views,** with column comments.
 4. **Ten rules:** average price, revenue, dates, relative dates, event grouping, venues, name matching, Nets games, people, and query style.
 5. **Answer, ask or decline:** the four kinds of response above.
-6. **Output format:** one JSON object with `action` (`query`, `clarify` or `cannot_answer`), plus `sql`, `assumptions`, `question` or `reason`.
+6. **Output format:** one JSON object with `action` (`query`, `clarify` or `cannot_answer`), plus `sql`, `explanation` (one plain-English sentence on how the result is calculated), `assumptions`, `question` or `reason`.
 7. **Six examples,** each showing a behavior the rules alone don't make obvious: `SUM / SUM` with `venue_label`, counting by sale date, a period outside the data range, a request that is partly off limits, a clarifying question, and a prompt injection attempt.
 
 All example queries have been run against `data/tickit.db` and return the same results as the equivalent queries written against the raw tables.
@@ -429,7 +429,62 @@ Within Claude, there are three tiers. Prices are per million tokens, input / out
 
 ## Part 4: Interface
 
-> **Not started.** How a user asks questions and sees answers and SQL. The brief allows a CLI, a minimal web UI or a notebook.
+> **Designed, not built yet.**
+
+**Choice: a single-page [Streamlit](https://streamlit.io) web app.** The user types a question in a browser and gets back the answer, the data behind it and the SQL. They never touch a terminal, SQL or the database.
+
+### Options considered
+
+| Option | Pros | Cons | Verdict |
+|---|---|---|---|
+| **Streamlit web page** | One Python file. Built-in tables, charts, expandable sections and buttons. Feels like a product to a non-technical user | One extra dependency. Runs as a local server | **Chosen** |
+| Command-line tool | Simplest to build | Too technical for the intended user, and wide result tables display poorly | Rejected as the user interface |
+| Gradio | Similar effort to Streamlit | Built around chat and model demos. Fits a page of answer, table and SQL less naturally | Rejected |
+| Jupyter notebook | Shows the outputs inline | Not something a non-technical user would open. Mixes agent logic with display | Rejected |
+
+### Why not a chat window
+
+The brief rules out multi-turn conversation memory, so each question is answered on its own. A chat layout would suggest the agent remembers earlier messages when it doesn't. The page is instead **one question in, one response out.** To follow up, the user edits the question and asks again.
+
+### What the page shows
+
+| Part | Purpose | Shown |
+|---|---|---|
+| **Answer** | One or two plain-English sentences. A single-figure answer is also shown as a large number | Always |
+| **Assumptions** | How unclear terms were read (e.g. "counted by sale date") | When there are any |
+| **Chart** | Bar chart for rankings, line chart for values over time | When the result fits one |
+| **Result table** | The rows the answer is based on (up to 100), sortable | Always for a query |
+| **How this was calculated** | The model's one-sentence `explanation`, then the SQL | Folded away, one click to open |
+
+The brief requires the SQL for transparency. The plain-English explanation is our addition, for readers who can't read SQL.
+
+The other kinds of response each get their own display:
+
+- **Clarifying question:** shown with suggested options. The question stays in the box so the user can refine it.
+- **Can't answer:** the reason, plus what the data does cover.
+- **Error:** a plain-English message, with the technical detail folded away.
+
+**Example questions** appear as buttons under the question box. These are the brief's three questions, with dates adjusted to the data's range. They make a first visit and a demo easier, and can be removed.
+
+### Look and feel
+
+The goal is a clean, professional page, achieved only through the parts of Streamlit that are stable across versions:
+
+- **Theme** in `.streamlit/config.toml`: colors and font, set in one place
+- **Layout:** a narrow, centered page with bordered cards that group the answer, assumptions and details
+- **Automatic charts**, chosen by the shape of the result: one value becomes a large number, labels with numbers become a bar chart, and dates become a line chart
+- **No custom CSS.** It depends on Streamlit's internal class names, which change between versions, so it breaks without warning
+- **No BSE or Nets logos or names**, so the page doesn't pass for an official BSE product
+
+### Separation from the agent
+
+The agent returns one result object (action, answer, explanation, assumptions, SQL, rows, error) and knows nothing about Streamlit. `app.py` only draws that object. The test scripts (Part 5) call the same agent function directly. That is how we check accuracy, not a user interface.
+
+### Limitations
+
+- It runs on the user's machine (`streamlit run app.py` opens it at `http://localhost:8501`). Hosting it online is out of scope, though Streamlit Community Cloud could host it later.
+- Each interaction reruns the script. The database connection and Claude client are created once and reused (`st.cache_resource`), and the current result is kept in `st.session_state`.
+- The styling options are limited. That fits the brief, which asks for a simple interface, not a polished one.
 
 ---
 
