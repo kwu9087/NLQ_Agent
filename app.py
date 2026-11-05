@@ -6,14 +6,19 @@ This file only draws an AgentResult. The agent (nlq_agent/) knows nothing about
 Streamlit, and display decisions such as chart choice live in ui/display.py.
 """
 
+from datetime import date
+
 import altair as alt
 import pandas as pd
 import streamlit as st
 
+from nlq_agent import catalog, config
 from nlq_agent.agent import Agent, AgentResult
 from ui.display import bar_labels, choose_chart, headline, is_money, label
 
-COVERAGE = "January 7, 2025 to January 7, 2026"
+# What the data doesn't hold. Shown in the overview; the agent's prompt says the same.
+NOT_IN_DATA = ("attendance, seats or sections, refunds, costs or profit, weather, "
+               "and customer names or contact details")
 
 # The brief's three questions, with dates moved into the data's range.
 EXAMPLES = {
@@ -32,12 +37,48 @@ def get_agent() -> Agent:
     return Agent.create()
 
 
+@st.cache_data(ttl=3600, show_spinner="Loading the data overview…")
+def get_overview(_agent: Agent) -> catalog.Overview:
+    """Live figures and subject areas, refreshed at most once an hour."""
+    return catalog.load_overview(_agent.db, config.VIEWS_SQL_PATH.read_text(encoding="utf-8"))
+
+
+def long_date(iso: str) -> str:
+    d = date.fromisoformat(iso)
+    return f"{d:%B} {d.day}, {d.year}"
+
+
+def compact_money(value: float) -> str:
+    return f"${value / 1e6:,.1f}M" if value >= 1e6 else f"${value:,.0f}"
+
+
 def use_example(question: str) -> None:
     st.session_state.question = question
     st.session_state.run = True
 
 
 # --- Rendering ------------------------------------------------------------------------
+
+def show_overview(o: catalog.Overview) -> None:
+    """What the data is, before the first question: four figures, details folded away."""
+    for column, (name, value) in zip(st.columns(4), [
+            ("Events", f"{o.events:,}"), ("Venues", f"{o.venues:,}"),
+            ("Tickets sold", f"{o.tickets:,}"), ("Gross sales", compact_money(o.revenue))]):
+        column.metric(name, value)
+    with st.expander("What's in the data"):
+        groups: dict[str, list[str]] = {}
+        for group, category, events in o.categories:
+            groups.setdefault(group, []).append(f"{category} ({events:,} events)")
+        st.markdown("**Categories:** " + " · ".join(
+            f"{group}: {', '.join(items)}" for group, items in groups.items()))
+        st.markdown("**What you can ask about:**")
+        for area in o.areas:
+            st.markdown(f"- **{area.name}:** {area.description}")
+            st.caption("Includes: " + ", ".join(label(f) for f in area.fields))
+        st.markdown(f"**Not in the data:** {NOT_IN_DATA}.")
+        st.caption("Ticket activity is a sample resale marketplace dataset. Brooklyn Nets "
+                   "games at Barclays Center are demo data added for this project.")
+
 
 def show_details(result: AgentResult) -> None:
     """The explanation and SQL, folded away."""
@@ -94,7 +135,7 @@ def show_table(result: AgentResult) -> None:
         st.caption(f"Showing the first {len(result.rows)} rows.")
 
 
-def show_result(result: AgentResult) -> None:
+def show_result(result: AgentResult, coverage: str) -> None:
     if result.status == "answered":
         with st.container(border=True):
             figures = headline(result.columns, result.rows)
@@ -118,7 +159,7 @@ def show_result(result: AgentResult) -> None:
 
     elif result.status == "cannot_answer":
         st.warning(result.reason)
-        st.caption(f"The data covers ticket sales from {COVERAGE}: events, venues, "
+        st.caption(f"The data covers ticket sales from {coverage}: events, venues, "
                    "categories, listings, sales and commission.")
 
     else:  # error
@@ -135,14 +176,18 @@ def show_result(result: AgentResult) -> None:
 
 st.set_page_config(page_title="Ticket Sales Q&A", page_icon="🎟️", layout="centered")
 st.title("Ask about ticket sales")
-st.caption(f"Ask a question in plain English about ticket sales from {COVERAGE}. "
-           "Each question is answered on its own: to follow up, edit it and ask again.")
 
 try:
     agent = get_agent()
 except (RuntimeError, FileNotFoundError) as e:     # missing API key or database
     st.error(f"The app isn't set up yet. {e}")
     st.stop()
+
+overview = get_overview(agent)
+coverage = f"{long_date(overview.first_date)} to {long_date(overview.last_date)}"
+st.caption(f"Ask a question in plain English about ticket sales from {coverage}. "
+           "Each question is answered on its own: to follow up, edit it and ask again.")
+show_overview(overview)
 
 with st.form("ask", border=False):
     st.text_area("Your question", key="question", height=80,
@@ -159,4 +204,4 @@ if submitted or st.session_state.pop("run", False):
         st.session_state.result = agent.ask(question)
 
 if "result" in st.session_state:
-    show_result(st.session_state.result)
+    show_result(st.session_state.result, coverage)

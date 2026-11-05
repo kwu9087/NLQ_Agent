@@ -5,6 +5,7 @@
 -- Money is in US dollars. Dates are ISO text: YYYY-MM-DD, months YYYY-MM, quarters YYYY-Qn.
 -- is_demo = 1 marks generated demo rows (Barclays Center, Brooklyn Nets games).
 
+-- Area: Venues | The theatres, arenas and halls where events take place, with city, state and capacity.
 -- One row per venue.
 CREATE VIEW venues AS
 SELECT
@@ -19,6 +20,7 @@ SELECT
     v.is_demo
 FROM venue v;
 
+-- Area: Sales | Every ticket purchase: which event, when it was bought, how many tickets and how much was paid.
 -- One row per ticket sale (a purchase of one or more tickets from one listing).
 CREATE VIEW sales_detail AS
 SELECT
@@ -55,6 +57,7 @@ JOIN event    e  ON e.eventid  = s.eventid
 JOIN category c  ON c.catid    = e.catid
 JOIN venues   vn ON vn.venue_id = e.venueid;
 
+-- Area: Listings | Tickets that sellers put up for sale, at what asking price, and how many of them sold.
 -- One row per listing (tickets a seller put up for sale), with how many of them sold.
 CREATE VIEW listing_detail AS
 SELECT
@@ -85,6 +88,7 @@ JOIN venues   vn ON vn.venue_id = e.venueid
 LEFT JOIN (SELECT listid, SUM(qtysold) AS tickets FROM sales GROUP BY listid) sold
        ON sold.listid = l.listid;
 
+-- Area: Events | Each performance or game, with its date, venue and lifetime totals for tickets and revenue.
 -- One row per event (a single performance or game), with lifetime totals across all
 -- its listings and sales. For totals within a sales period, use sales_detail instead.
 CREATE VIEW event_summary AS
@@ -120,6 +124,7 @@ LEFT JOIN (SELECT eventid, SUM(qtysold) AS tickets, SUM(pricepaid) AS revenue,
            FROM sales GROUP BY eventid) sld
        ON sld.eventid = e.eventid;
 
+-- Area: Customers | Buyers and sellers by user ID, with home city and state and their interests. No names or contact details.
 -- One row per user, without names or contact details.
 CREATE VIEW users_public AS
 SELECT

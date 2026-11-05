@@ -6,12 +6,31 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from nlq_agent import catalog
 from nlq_agent.agent import Agent, AgentResult
 
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
+OVERVIEW = catalog.Overview(
+    first_date="2025-01-07", last_date="2026-01-07", sales=174849, tickets=350159,
+    revenue=112355166.0, events=8844, venues=206,
+    categories=[("Concerts", "Pop", 4998), ("Sports", "NBA", 46)],
+    areas=[catalog.SubjectArea("sales_detail", "Sales", "Every ticket purchase.",
+                               ["sale_date", "tickets", "sale_total"])])
+OVERVIEW_METRICS = ["8,844", "206", "350,159", "$112.4M"]
+
+
+@pytest.fixture(autouse=True)
+def fixed_overview(monkeypatch):
+    """The page's data overview, without querying the real database."""
+    monkeypatch.setattr(catalog, "load_overview", lambda db, views_sql: OVERVIEW)
+    st.cache_data.clear()
+
+
 class FakeAgent:
+    db = None
+
     def __init__(self, result: AgentResult):
         self.result = result
         self.questions = []
@@ -43,7 +62,7 @@ def test_answer_shows_figures_assumptions_table_and_sql(run_app):
                          rows=[(829, 242452.0)], attempts=1)
     at, fake = run_app(result, "Nets tickets last month?")
     assert fake.questions == ["Nets tickets last month?"]
-    assert [m.value for m in at.metric] == ["829", "$242,452.00"]
+    assert [m.value for m in at.metric] == OVERVIEW_METRICS + ["829", "$242,452.00"]
     assert any("829 tickets were sold." in m.value for m in at.markdown)
     assert any("Uses December 2025." in m.value for m in at.markdown)
     assert len(at.dataframe) == 1
@@ -92,3 +111,15 @@ def test_setup_problem_is_shown_not_raised(monkeypatch):
     at = AppTest.from_file(APP, default_timeout=30).run()
     assert not at.exception
     assert "ANTHROPIC_API_KEY is not set." in at.error[0].value
+
+
+def test_overview_is_shown_before_any_question(monkeypatch):
+    monkeypatch.setattr(Agent, "create", classmethod(lambda cls: FakeAgent(None)))
+    st.cache_resource.clear()
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    assert not at.exception
+    assert [m.value for m in at.metric] == OVERVIEW_METRICS
+    assert "January 7, 2025 to January 7, 2026" in at.caption[0].value
+    text = " ".join(m.value for m in at.markdown)
+    assert "Pop (4,998 events)" in text and "**Sales:** Every ticket purchase." in text
+    assert any("Includes: Sale date, Tickets, Sale total" in c.value for c in at.caption)

@@ -529,6 +529,34 @@ The other kinds of response each get their own display:
 
 **Example questions** appear as buttons under the question box. These are the brief's three questions, with dates adjusted to the data's range. They make a first visit and a demo easier, and can be removed.
 
+### Data overview: what you can ask about
+
+A user can't ask good questions about data they can't see. So before the first question, the page shows what the data is, kept small so it doesn't overwhelm:
+
+- **Always visible:** the date range in the header, and four figures: events, venues, tickets sold, gross sales.
+- **Folded away under "What's in the data":**
+  - The categories, with their event counts.
+  - The subject areas you can ask about (Sales, Listings, Events, Venues, Customers), each with one plain-English sentence and its fields as plain labels.
+  - What is *not* in the data.
+
+**It is generated, not written by hand** ([`nlq_agent/catalog.py`](nlq_agent/catalog.py)):
+
+- **The figures are live.** They are queried through `Database.run()`, the same read-only, permission-checked path as the agent's SQL. They are cached for an hour.
+- **The subject areas come from `scripts/views.sql`,** the same file that is the schema in the agent's prompt. Each view has an `-- Area: <name> | <sentence>` line written for business users. The fields are the view's real columns, with internal IDs left out.
+- **The two kinds of comment are kept apart.** The other comments in `views.sql` are technical notes for the model ("NOT unique", "use for grouping"), so they are not shown to users. Enterprise data catalogs make the same split between business descriptions and technical notes.
+- **One definition serves both,** so the overview and the agent can't fall out of step. Add a view with an Area line, and both pick it up.
+- **Private columns can't leak into it.** It lists columns through the same authorizer, so `email` or `phone` can't appear.
+
+**On an enterprise database** the shape stays the same, but three parts change:
+
+| Here | Hundreds of tables, millions of rows |
+|---|---|
+| Live counts at startup (about 1 second) | Counts from precomputed table statistics or the warehouse's metadata, refreshed on a schedule. Live counts over large tables are too slow for a page load |
+| Five views, all shown | A curated catalog of subject areas. Users see areas, not tables, and the list is filtered by what their role is allowed to query |
+| The whole schema in the prompt | The same catalog drives retrieval: the agent is given only the areas relevant to the question, because hundreds of tables don't fit in one prompt |
+
+The overview's descriptions and the agent's context should come from one catalog, as they do here, rather than being maintained separately.
+
 ### Look and feel
 
 The goal is a clean, professional page, achieved only through the parts of Streamlit that are stable across versions:
@@ -573,6 +601,7 @@ NLQ_Agent/
 │   └── tickit.db     # Built by scripts/build_db.py (git-ignored)
 ├── nlq_agent/        # The agent (Part 2)
 │   ├── agent.py      # Question-to-answer flow; returns an AgentResult
+│   ├── catalog.py    # Data overview for the page: live figures and subject areas
 │   ├── llm.py        # Prompt building and Claude API calls
 │   ├── database.py   # Read-only execution and safety checks
 │   └── config.py     # Settings (model, effort, limits, paths)
