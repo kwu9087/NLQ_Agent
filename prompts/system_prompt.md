@@ -1,5 +1,5 @@
 <!--
-System prompt for the SQL-generation step of the NLQ agent. DRAFT.
+System prompt for the SQL-generation step of the NLQ agent.
 Placeholders filled in by code at request time:
   {{schema}}  the contents of scripts/views.sql (the only part of the database the agent can query)
 Nothing in this prompt changes between requests, so it can be cached. Today's date and the

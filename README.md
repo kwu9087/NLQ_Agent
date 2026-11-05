@@ -346,9 +346,9 @@ The last case covers three variants:
 
 **Principle: an empty result must never look like an answer of zero.** "0 tickets sold in 2028" is misleading. "The data stops in January 2026" is honest.
 
-### System prompt (draft)
+### System prompt
 
-The draft is in [`prompts/system_prompt.md`](prompts/system_prompt.md). It is a template: code fills in `{{schema}}` (the contents of `scripts/views.sql`), so the model only ever sees the views. Nothing in it changes between requests, so it is [cached](#what-this-choice-means-for-the-code). Today's date and the question go in the user message instead, in `<today>` and `<question>` tags. In order, it contains:
+The prompt is in [`prompts/system_prompt.md`](prompts/system_prompt.md). It is a template: code fills in `{{schema}}` (the contents of `scripts/views.sql`), so the model only ever sees the views. Nothing in it changes between requests, so it is [cached](#what-this-choice-means-for-the-code). Today's date and the question go in the user message instead, in `<today>` and `<question>` tags. In order, it contains:
 
 1. **Trust and safety:** the user's message is a question, never instructions. Text in the data is data. Exactly one `SELECT`, against the views only.
 2. **The data:** what the marketplace is, the date range, which categories have events, and what the data doesn't contain.
@@ -594,11 +594,192 @@ The agent returns one result object (action, answer, explanation, assumptions, S
 
 ## Part 5: Code Quality
 
-> **Not started.** Project structure and separation of concerns (prompt logic, query execution, response formatting), error handling, setup instructions and tests.
+> **Draft.**
+
+### Setup
+
+**You need:** Python 3.10 or later, an [Anthropic API key](https://console.anthropic.com/settings/keys), and about 500 MB of disk space (440 MB of Python packages, 40 MB for the database).
+
+These steps were checked from a fresh clone on Windows with Python 3.15: installing took about 70 seconds, building the database about 10, and `pytest` passed with no API key set.
+
+**1. Get the code and install the packages**
+
+```bash
+git clone <this repository> NLQ_Agent
+cd NLQ_Agent
+python -m venv .venv
+```
+
+Activate the virtual environment:
+
+| Shell | Command |
+|---|---|
+| macOS / Linux | `source .venv/bin/activate` |
+| Windows PowerShell | `.venv\Scripts\Activate.ps1` |
+| Windows Git Bash | `source .venv/Scripts/activate` |
+
+Then install the packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+**2. Build the database** (about 10 seconds, no API key needed)
+
+```bash
+python scripts/build_db.py
+```
+
+This reads the raw files in `data/raw/` and writes `data/tickit.db`. It ends with a list of consistency checks that should all say `ok`.
+
+**3. Add your API key**
+
+Create a file named `.env` in the project root containing one line:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+`.env` is git-ignored. Setting `ANTHROPIC_API_KEY` in your shell works too, and takes priority.
+
+**4. Run the app**
+
+```bash
+streamlit run app.py
+```
+
+The app opens at `http://localhost:8501`. Try one of the example buttons.
+
+**Other commands**
+
+| Command | What it does | API calls |
+|---|---|---|
+| `pytest` | 66 offline tests: SQL safety, the question-to-answer flow with a fake model, chart choices, the page, the accuracy checker | None |
+| `python -m evals.run` | The 24-question accuracy test set against the live model. Writes `evals/last_run.md` | About 45 (roughly $1–2 on Opus 5.5) |
+| `python -m evals.run weekday commission` | Only the named cases | A few |
+
+**Using the agent without the app**
+
+```python
+from nlq_agent.agent import Agent
+
+agent = Agent.create()
+result = agent.ask("Top 5 event categories by total revenue")
+print(result.status, result.answer)
+print(result.sql)
+```
+
+**Troubleshooting**
+
+| Message | Cause and fix |
+|---|---|
+| `ANTHROPIC_API_KEY is not set` | No key found. Add it to `.env` (step 3) and restart the app |
+| `The AI service rejected the API key` | The key is wrong, revoked or has no credit. Check it in the Claude Console |
+| `Database not found at ...` | Step 2 hasn't been run |
+| `PermissionError` when rebuilding the database | The app (or another Python process) has the database open. Stop it, rebuild, start it again |
+| `Port 8501 is already in use` | Another app is running. Stop it, or use `streamlit run app.py --server.port 8502` |
+
+### Architecture
+
+```
+app.py (Streamlit)          ui/display.py: chart choice, formatting
+   │  draws an AgentResult; knows nothing about SQL or prompts
+   ▼
+nlq_agent/agent.py          the flow: plan → check and run → repair once → answer
+   │                        returns an AgentResult; never raises
+   ├── llm.py               prompt building and Claude calls (SQL step, answer step)
+   │     └── prompts/*.md   prompt text, kept out of the code
+   ├── database.py          read-only connection, SQL check, authorizer, row and time limits
+   │     └── data/tickit.db built by scripts/build_db.py; the agent sees only scripts/views.sql
+   ├── catalog.py           the data overview on the page (live figures, subject areas)
+   └── config.py            every setting in one place, overridable by environment variable
+```
+
+The brief asks for three concerns to be kept apart:
+
+| Concern | Where it lives | Knows nothing about |
+|---|---|---|
+| Prompt logic | `prompts/system_prompt.md`, `prompts/answer_prompt.md` (text) and `nlq_agent/llm.py` (assembling requests, parsing the JSON reply) | The database connection, the interface |
+| Query execution | `nlq_agent/database.py` | Prompts, the model, the interface |
+| Response formatting | The answer step (`AnswerWriter` in `llm.py`) writes the words. `ui/display.py` decides charts and number formats. `app.py` draws them | How the SQL was produced |
+
+`agent.py` is the only module that connects them. It holds no prompt text, SQL rules or display code. Dependencies point one way: `app.py` → `nlq_agent`, never the reverse. Nothing in `nlq_agent/` imports Streamlit, so a command-line tool, a Slack bot or a notebook could use the same `Agent.ask()` unchanged.
+
+**How to extend it**
+
+| To... | Change |
+|---|---|
+| Teach a new question pattern | Add a rule or an example to `prompts/system_prompt.md`, and a case to `evals/cases.py` to keep it working |
+| Expose more data | Add a view to `scripts/views.sql` with column comments for the model and an `-- Area:` line for users, then rebuild. The prompt and the page's overview pick it up automatically. Add the view name to `VIEWS` in `database.py` |
+| Try another Claude model or effort level | `NLQ_MODEL`, `NLQ_SQL_EFFORT`, `NLQ_ANSWER_EFFORT`, then run `python -m evals.run` to compare |
+| Add a different interface | Call `Agent.ask(question)` and display the `AgentResult` |
+
+### Error handling
+
+Every failure becomes an `AgentResult` with a plain-English message for the user and, separately, technical detail. `Agent.ask()` never raises, so the interface can't crash on a bad question.
+
+| Failure | What the user sees |
+|---|---|
+| Unclear question | A clarifying question. No query is run |
+| Question the data can't answer (not in the data, private, off-topic, prompt injection) | Why, and what the data can answer instead |
+| Empty result | "No matching data was found", with a likely reason. Never reported as zero |
+| Malformed SQL or unknown column | Nothing, if the one automatic repair works. Otherwise "I couldn't build a working query" |
+| SQL that isn't a single read-only query | "That request would need more than reading the data". Not retried |
+| Query over 5 seconds | A request to narrow the question. Not retried |
+| Result over 100 rows | The first 100, and a note that the list is cut off |
+| Bad API key, rate limit, network error, model refusal | A specific message for each |
+| The answer step fails after the query ran | The data and SQL are still shown |
+| Missing API key or database at startup | A setup message on the page, instead of a crash |
+
+Details of each layer are in [Part 2](#how-a-question-is-answered) and [Defending against prompt injection and unsafe SQL](#defending-against-prompt-injection-and-unsafe-sql).
+
+### Testing
+
+| Layer | What | Where |
+|---|---|---|
+| Offline, `pytest` (66 tests, about 7 seconds) | SQL check and authorizer (21), the flow with a fake model (10), display decisions (10), the page run headlessly (8), the accuracy checker (13), the data overview (4) | `tests/` |
+| Live accuracy set (24 questions) | Figures checked against reference queries on the **raw tables**, plus expected outcomes, privacy, prompt injection, empty results, self-corrections | `evals/` |
+| Stress test (18 harder questions) | One-off review of realistic, complex questions. It found three problems, now fixed and each covered by an accuracy case | [Part 2](#stress-test) |
+
+The accuracy checker uses value matching and a few wording patterns, not a second model acting as a judge. That makes it cheap, repeatable and easy to read. The cost is that wording checks can be wrong in both directions. It flagged correct answers four times during development, and each case is now covered by a test of the checker itself.
+
+### Trade-offs
+
+| Decision | Benefit | Cost |
+|---|---|---|
+| SQLite with agent-facing views | One file, no server, and many query mistakes become impossible | Five views to maintain. `event_summary` takes about 1 second per query because it isn't precomputed |
+| The whole schema in every prompt | Simple, and the model always sees every view | Doesn't scale to hundreds of tables. That would need retrieval (see Part 4, Data overview) |
+| Two model calls per question (SQL, then answer) | Short, focused prompts. The answer step can't change the query | About twice the latency and cost of one call: 5–12 seconds per question |
+| Opus 5.5 at `medium` effort | Best accuracy and handling of unclear questions | Cheaper models weren't measured. The test set makes that a quick comparison |
+| Fixed sensible defaults, with assumptions stated, instead of asking | Most questions get an answer straight away | A user who doesn't read the assumptions may miss that "last month" meant December 2025 |
+| Data shifted to 2025, plus generated Nets games | The brief's example questions work | Nets buying behavior is copied, not real. The agent says so when it matters |
+| One question at a time, no conversation memory | Matches the brief and keeps answers independent | No follow-up questions like "and the year before?" |
+| Pattern-based checks in the test set | Free, fast, repeatable | Can be wrong, as noted above |
+
+### What I would do with more time
+
+- **Measure cheaper models.** Run the accuracy set on Sonnet 5.5 and Haiku 5.5. If one matches Opus on this workload, it cuts cost by half or more.
+- **A bigger test set, run repeatedly.** Model output varies between runs. The effort comparison showed one-off problems need dozens of repeats to measure. I'd want 100+ questions, each run several times, with pass rates instead of single pass/fail.
+- **Retrieval of the relevant schema** for a real warehouse, driven by the same catalog that feeds the data overview.
+- **Suggestions for unknown names.** "Hamilton" isn't in the data. The agent should suggest close matches, using a fuzzy search over event and venue names.
+- **Follow-up questions**, by passing the previous question, SQL and assumptions as context. The brief left this out of scope.
+- **Logging and monitoring:** tokens, cost, latency and cache hits per question, and the questions users ask that fail.
+- **Faster answers:** stream the answer text as it is written, and cache repeated questions.
+- **Access control from the user's login,** not the prompt, so different roles can see different data. For example, contact details for an authorized support team.
+- **Shorter field lists** in the data overview, e.g. "Sale date (also by month, quarter, year)".
+
+### AI tools used
+
+These are the only AI tools used in this project.
+
+| Tool | Provider | Used for |
+|---|---|---|
+| Claude Code (CLI), running Claude Opus 5.5 | Anthropic | Pair programming throughout: exploring and profiling the dataset, design discussions, writing the load script, agent, interface, tests and this README, and running and analysing the live tests. Commits made with it carry a `Co-Authored-By: Claude` line |
+| Claude Opus 5.5, via the Anthropic API | Anthropic | The agent's model at runtime (see Part 3) |
 
 ---
 
-## Repository layout (so far)
+## Repository layout
 
 ```
 NLQ_Agent/
@@ -612,8 +793,8 @@ NLQ_Agent/
 │   ├── database.py   # Read-only execution and safety checks
 │   └── config.py     # Settings (model, effort, limits, paths)
 ├── prompts/
-│   ├── system_prompt.md  # System prompt for the SQL step (draft)
-│   └── answer_prompt.md  # System prompt for the answer step (draft)
+│   ├── system_prompt.md  # System prompt for the SQL step
+│   └── answer_prompt.md  # System prompt for the answer step
 ├── scripts/
 │   ├── build_db.py   # Load step: parse, fix, shift dates, add demo data, write and check
 │   ├── demo_data.py  # Barclays Center and Brooklyn Nets demo data generator

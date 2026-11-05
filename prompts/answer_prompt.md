@@ -1,5 +1,5 @@
 <!--
-System prompt for the answer-writing step of the NLQ agent. DRAFT.
+System prompt for the answer-writing step of the NLQ agent.
 The user message, built by nlq_agent/llm.py, holds the question, the assumptions the
 SQL step made, and the query result as JSON.
 -->
