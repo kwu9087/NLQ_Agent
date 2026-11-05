@@ -58,13 +58,48 @@ class QueryResult:
 # Strings, quoted names and comments, matched left to right, so "--" inside a string
 # is not a comment and a quote inside a comment is not a string.
 _LEXEMES = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?(?:\*/|$)", re.S)
-# A WITH name: "name AS (" or "name(col, ...) AS (", optionally [NOT] MATERIALIZED.
-_CTE_NAME = re.compile(r"(\w+)\s*(?:\([^()]*\))?\s+AS\s+(?:NOT\s+)?(?:MATERIALIZED\s+)?\(",
-                       re.I)
+# Tokens for finding WITH names. SQLite accepts a name bare or quoted in any of four
+# ways ("x", [x], `x`, even 'x'), with or without spaces around AS, so a regex over
+# bare words misses some. Comments are matched so they can be skipped.
+_TOKENS = re.compile(r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]
+                         |--[^\n]*|/\*.*?(?:\*/|$)|\w+|\S""", re.S | re.X)
+_QUOTES = {"'": "'", '"': '"', "`": "`", "[": "]"}
 
 
 def _blank_strings_and_comments(sql: str) -> str:
     return _LEXEMES.sub(lambda m: "''" if m.group(0)[0] in "'\"" else " ", sql)
+
+
+def _name(token: str) -> str:
+    """The name a token stands for: venues, "venues", [venues], `venues` -> venues."""
+    close = _QUOTES.get(token[0])
+    if close and len(token) >= 2 and token[-1] == close:
+        return token[1:-1].replace(close * 2, close)
+    return token
+
+
+def _with_names(sql: str) -> list[str]:
+    """Names declared as WITH tables: NAME [(cols)] AS [NOT] [MATERIALIZED] (."""
+    tokens = [t for t in _TOKENS.findall(sql) if not t.startswith(("--", "/*"))]
+    upper = [t.upper() for t in tokens]
+    names = []
+    for i, token in enumerate(tokens):
+        if not (token[0].isalnum() or token[0] == "_" or token[0] in _QUOTES):
+            continue
+        j = i + 1
+        if j < len(tokens) and tokens[j] == "(":          # optional column list
+            while j < len(tokens) and tokens[j] != ")":
+                j += 1
+            j += 1
+        if j >= len(tokens) or upper[j] != "AS":
+            continue
+        j += 1
+        for optional in ("NOT", "MATERIALIZED"):
+            if j < len(tokens) and upper[j] == optional:
+                j += 1
+        if j < len(tokens) and tokens[j] == "(":
+            names.append(_name(token))
+    return names
 
 
 def check_sql(sql: str, views: frozenset[str] = frozenset()) -> str:
@@ -84,7 +119,9 @@ def check_sql(sql: str, views: frozenset[str] = frozenset()) -> str:
     first_word = code.split(None, 1)[0].upper()
     if first_word not in ("SELECT", "WITH"):
         raise UnsafeQueryError(f"Only SELECT queries are allowed, not {first_word}.")
-    posing = {name for name in _CTE_NAME.findall(code) if name.lower() in views}
+    # SQLite reports a WITH table's name to the authorizer as the source of its reads,
+    # just as it does for a view, so a WITH named like a view would be trusted as one.
+    posing = {name for name in _with_names(sql) if name.lower() in views}
     if posing:
         raise UnsafeQueryError(f"A WITH name can't reuse a view's name: {sorted(posing)}.")
     return sql.strip()

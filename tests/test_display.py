@@ -102,3 +102,28 @@ def test_no_chart_when_the_only_number_is_a_year():
 def test_a_year_column_is_not_plotted_as_the_value():
     spec = choose_chart(["event_name", "sale_year", "tickets"], [("A", 2025, 5), ("B", 2025, 7)])
     assert spec.y == "tickets"
+
+
+def test_shares_rates_and_ranks_are_not_dollars():
+    # Column names the agent produced in stress testing, shown as "$55.57" and "$15.00".
+    assert format_value("pct_of_total_revenue", 55.57) == "55.57"
+    assert format_value("commission_rate_pct", 15.0) == "15"
+    assert format_value("revenue_share", 0.25) == "0.25"
+    assert format_value("price_rank", 3) == "3"
+    assert format_value("revenue_growth_percent", -5.79) == "-5.79"
+
+
+def test_money_column_names_the_agent_uses_are_dollars():
+    # total_sales showed as "112,355,166" with no dollar sign.
+    for column in ("total_sales", "gross_sales", "seller_take_home", "total_spend"):
+        assert format_value(column, 1234.5) == "$1,234.50", column
+    assert headline(["total_commission", "total_sales", "commission_rate_pct"],
+                    [(16853274.9, 112355166.0, 15.0)]) == [
+        ("Total commission", "$16,853,274.90"), ("Total sales", "$112,355,166.00"),
+        ("Commission rate pct", "15")]
+
+
+def test_negative_money_and_years_read_naturally():
+    assert format_value("revenue_change", -5.79) == "-$5.79"
+    assert headline(["sale_year", "tickets_sold"], [(2025, 1000)]) == [
+        ("Sale year", "2025"), ("Tickets sold", "1,000")]

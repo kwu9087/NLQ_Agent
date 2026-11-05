@@ -37,7 +37,7 @@ streamlit run app.py                                   # http://localhost:8501
 
 - **Accuracy set:** 24 of 24 questions pass, with figures checked against reference queries on the raw tables ([report](evals/last_run.md)).
 - **Stress test:** 18 harder questions, all figures correct. It found three problems, now fixed and covered by tests.
-- **Offline tests:** 94 pass, with no API calls.
+- **Offline tests:** 112 pass, with no API calls.
 - **Independent review:** a code review found and confirmed 15 bugs, all now fixed with tests (see [Part 5](#independent-review)).
 
 ---
@@ -420,7 +420,7 @@ question
 
 **Settings** (environment variables, all optional): `NLQ_MODEL` (default `claude-opus-5-5`), `NLQ_SQL_EFFORT` (default `medium`), `NLQ_ANSWER_EFFORT` (default `medium`), `NLQ_TODAY` (pins today's date, for tests and demos), `NLQ_DB_PATH`.
 
-**Tests:** `pytest` runs 94 tests with no API calls. See [Testing](#testing) in Part 5.
+**Tests:** `pytest` runs 112 tests with no API calls. See [Testing](#testing) in Part 5.
 
 ### Accuracy test set
 
@@ -697,7 +697,7 @@ The app opens at `http://localhost:8501`. Try one of the example buttons.
 
 | Command | What it does | API calls |
 |---|---|---|
-| `pytest` | 94 offline tests: SQL safety, the question-to-answer flow with a fake model, chart choices, the page, the accuracy checker | None |
+| `pytest` | 112 offline tests: SQL safety, the question-to-answer flow with a fake model, chart choices, the page, the accuracy checker | None |
 | `python -m evals.run` | The 24-question accuracy test set against the live model. Writes `evals/last_run.md` | About 45 (roughly $1–2 on Opus 5.5) |
 | `python -m evals.run weekday commission` | Only the named cases | A few |
 
@@ -781,7 +781,7 @@ Details of each layer are in [Part 2](#how-a-question-is-answered) and [Defendin
 
 | Layer | What | Where |
 |---|---|---|
-| Offline, `pytest` (94 tests, about 10 seconds) | SQL check, authorizer, limits and concurrency (39), the flow with a fake model (14), display decisions (14), the page run headlessly (10), the accuracy checker (13), the data overview (4) | `tests/` |
+| Offline, `pytest` (112 tests, about 10 seconds) | SQL check, authorizer, limits and concurrency (52), the flow with a fake model (16), display decisions (17), the page run headlessly (10), the accuracy checker (13), the data overview (4) | `tests/` |
 | Live accuracy set (24 questions) | Figures checked against reference queries on the **raw tables**, plus expected outcomes, privacy, prompt injection, empty results, self-corrections | `evals/` |
 | Stress test (18 harder questions) | One-off review of realistic, complex questions. It found three problems, now fixed and each covered by an accuracy case | [Part 2](#stress-test) |
 

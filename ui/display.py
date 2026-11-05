@@ -10,7 +10,13 @@ from typing import Any, Literal, Optional
 
 MAX_BAR_ROWS = 25
 
-_MONEY = re.compile(r"revenue|price|spent|sales?_total|total_paid|commission|earn|amount", re.I)
+_MONEY = re.compile(r"revenue|price|spent|spend|sales?_total|(total|gross|net)_sales|paid"
+                    r"|take_home|commission|earn|amount|cost", re.I)
+# Names that hold a share, rate or rank even when they mention money: pct_of_revenue,
+# commission_rate_pct, price_rank. These are never dollars.
+_NOT_MONEY = re.compile(r"(^|_)(pct|percent|percentage|rate|ratio|share|rank)(_|$)",
+                        re.I)
+_YEAR = re.compile(r"(^|_)year(_|$)", re.I)
 _ID = re.compile(r"(^|_)id$", re.I)
 # Values that read as points in time: 2025, 2025-03, 2025-03-14, 2025-Q3.
 _TIME_VALUE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?|-Q[1-4])?$")
@@ -26,7 +32,7 @@ def label(column: str) -> str:
 
 
 def is_money(column: str) -> bool:
-    return bool(_MONEY.search(column))
+    return bool(_MONEY.search(column)) and not _NOT_MONEY.search(column)
 
 
 def format_value(column: str, value: Any) -> str:
@@ -35,7 +41,9 @@ def format_value(column: str, value: Any) -> str:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return str(value)
     if is_money(column):
-        return f"${value:,.2f}"
+        return f"-${-value:,.2f}" if value < 0 else f"${value:,.2f}"
+    if _YEAR.search(column) and float(value).is_integer():
+        return str(int(value))                       # 2025, not 2,025
     if isinstance(value, float) and not value.is_integer():
         return f"{value:,.2f}"
     return f"{int(value):,}"

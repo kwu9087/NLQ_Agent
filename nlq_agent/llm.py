@@ -172,12 +172,16 @@ class AnswerWriter(_ClaudeStep):
 
     def write(self, question: str, plan: QueryPlan, columns: list[str], rows: list[tuple],
               truncated: bool) -> str:
+        # The model may see fewer rows than the reader's table holds. Two separate facts,
+        # so it never mistakes its own shorter view for a cut-off table: whether the
+        # table is cut off, and how many rows the table shows.
         shown = rows[:config.ANSWER_ROWS]
         result = {
             "columns": columns,
             "rows": [list(r) for r in shown],
-            "row_count": len(rows),
-            "cut_off": truncated or len(rows) > len(shown),
+            "rows_given_to_you": len(shown),
+            "rows_in_table": len(rows),
+            "table_cut_off": truncated,
         }
         user = (f"<question>{_escape(question)}</question>\n"
                 f"<assumptions>{_escape(json.dumps(plan.assumptions))}</assumptions>\n"

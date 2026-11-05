@@ -54,6 +54,35 @@ def test_with_name_posing_as_a_view_is_rejected(sql):
         check_sql(sql, VIEWS)
 
 
+# Found by stress testing: SQLite trusts a WITH table named like a view as if it were
+# the view (the authorizer sees the WITH name as the read's source), and these
+# spellings got past the old regex, so each one read the raw sales table.
+@pytest.mark.parametrize("sql", [
+    'WITH "venues" AS (SELECT pricepaid FROM sales) SELECT * FROM "venues"',
+    "WITH [venues] AS (SELECT pricepaid FROM sales) SELECT * FROM [venues]",
+    "WITH `venues` AS (SELECT pricepaid FROM sales) SELECT * FROM `venues`",
+    "WITH 'venues' AS (SELECT pricepaid FROM sales) SELECT * FROM 'venues'",
+    "WITH venues AS(SELECT pricepaid FROM sales) SELECT * FROM venues",
+    'WITH "venues"(p)AS(SELECT pricepaid FROM sales) SELECT p FROM "venues"',
+    "WITH venues AS MATERIALIZED(SELECT pricepaid FROM sales) SELECT * FROM venues",
+    "WITH venues /* x */ AS NOT MATERIALIZED (SELECT pricepaid FROM sales) SELECT * FROM venues",
+    "WITH t AS (SELECT 1), \"Sales_Detail\" AS (SELECT pricepaid FROM sales) SELECT 1",
+])
+def test_quoted_or_unspaced_with_name_posing_as_a_view_is_rejected(db, sql):
+    with pytest.raises(UnsafeQueryError, match="view's name"):
+        db.run(sql)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT CAST(tickets AS INTEGER) AS n FROM sales_detail LIMIT 1",
+    "SELECT COUNT(*) AS n FROM venues WHERE venue_name = 'venues'",
+    'WITH "my venues" AS (SELECT venue_id FROM venues) SELECT COUNT(*) FROM "my venues"',
+    "SELECT venues.venue_id FROM venues AS v2 JOIN venues ON venues.venue_id = v2.venue_id LIMIT 1",
+])
+def test_ordinary_queries_mentioning_view_names_still_run(db, sql):
+    assert db.run(sql).rows
+
+
 @pytest.mark.parametrize("sql", [
     "",
     "DELETE FROM sales",

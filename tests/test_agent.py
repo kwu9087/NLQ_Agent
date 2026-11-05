@@ -146,3 +146,43 @@ def test_model_errors_become_results(db):
     r2 = make(db, [ModelRefusal("I can't help with that request.")]).ask("Q?", TODAY)
     assert (r1.status, r1.error, r1.error_detail) == ("error", "The AI service is busy.", "429")
     assert r2.status == "cannot_answer"
+
+
+class _RecordingClient:
+    """Stands in for the Anthropic client and keeps the answer request it was sent."""
+
+    def __init__(self):
+        self.sent = None
+        self.beta = self
+        self.messages = self
+
+    def create(self, **kwargs):
+        self.sent = kwargs["messages"][0]["content"]
+        block = type("Block", (), {"type": "text", "text": "ok"})()
+        return type("Response", (), {"stop_reason": "end_turn", "content": [block]})()
+
+
+def _answer_payload(rows, truncated):
+    import json, re
+    from nlq_agent.llm import AnswerWriter
+    client = _RecordingClient()
+    AnswerWriter(client).write("q", QueryPlan("query", sql="SELECT 1"), ["n"], rows, truncated)
+    raw = re.search(r"<result>(.*)</result>", client.sent, re.S).group(1)
+    return json.loads(raw.replace("&lt;", "<").replace("&gt;", ">"))
+
+
+def test_answer_step_isnt_told_a_complete_table_is_cut_off():
+    # Stress test: 58 rows, all shown, but the answer said "only the 50 venues shown
+    # out of 58" because it was told the result was cut off.
+    result = _answer_payload([(i,) for i in range(58)], truncated=False)
+    assert result["table_cut_off"] is False
+    assert result["rows_in_table"] == 58
+    assert result["rows_given_to_you"] == len(result["rows"]) == 50
+
+
+def test_answer_step_is_told_how_many_rows_a_cut_off_table_shows():
+    # Stress test: the answer described the table as "ranks 130 to 81" (its own 50
+    # rows) when the table showed 100.
+    result = _answer_payload([(i,) for i in range(100)], truncated=True)
+    assert result["table_cut_off"] is True
+    assert result["rows_in_table"] == 100
