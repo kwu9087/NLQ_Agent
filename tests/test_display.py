@@ -1,6 +1,6 @@
 """Offline tests for ui/display.py: chart choice, headline figures and formatting."""
 
-from ui.display import bar_labels, choose_chart, format_value, headline, label
+from ui.display import bar_labels, choose_chart, format_value, headline, label, sort_column
 
 
 def test_label_and_formatting():
@@ -28,6 +28,27 @@ def test_ranking_gets_a_bar_chart():
     rows = [("Pop", "Concerts", 62434243.0, 195444), ("Plays", "Shows", 25538940.0, 78545)]
     spec = choose_chart(columns, rows)
     assert (spec.kind, spec.x, spec.y, spec.money) == ("bar", "category", "revenue", True)
+
+
+def test_ranking_charts_the_column_it_is_sorted_by():
+    # "Top 5 categories by revenue": tickets_sold comes first but the ranking is by revenue.
+    columns = ["category", "category_group", "tickets_sold", "revenue"]
+    rows = [("Pop", "Concerts", 195444, 62434243.0), ("Plays", "Shows", 78545, 25538940.0)]
+    sql = ("SELECT category, category_group, SUM(tickets) AS tickets_sold, "
+           "ROUND(SUM(sale_total), 2) AS revenue FROM sales_detail "
+           "GROUP BY category, category_group ORDER BY revenue DESC LIMIT 5")
+    spec = choose_chart(columns, rows, sort_column(sql))
+    assert (spec.y, spec.money) == ("revenue", True)
+    assert choose_chart(columns, rows).y == "tickets_sold"      # no sort known: first number
+
+
+def test_sort_column():
+    assert sort_column("SELECT a FROM t ORDER BY revenue DESC LIMIT 5") == "revenue"
+    assert sort_column("SELECT a FROM t\nORDER BY s.tickets_sold DESC\nLIMIT 10;") == "tickets_sold"
+    assert sort_column("SELECT a FROM t ORDER BY a.category_group, a.category") == "category_group"
+    assert sort_column("SELECT a FROM t ORDER BY SUM(x) DESC") is None      # an expression
+    assert sort_column("SELECT 1") is None
+    assert sort_column(None) is None
 
 
 def test_values_over_time_get_a_line_chart():

@@ -15,7 +15,7 @@ import streamlit as st
 
 from nlq_agent import catalog, config
 from nlq_agent.agent import Agent, AgentResult
-from ui.display import bar_labels, choose_chart, headline, is_money, label
+from ui.display import bar_labels, choose_chart, headline, is_money, label, sort_column
 
 # What the data doesn't hold. Shown in the overview; the agent's prompt says the same.
 NOT_IN_DATA = ("attendance, seats or sections, refunds, costs or profit, weather, "
@@ -53,6 +53,11 @@ def compact_money(value: float) -> str:
     return f"${value / 1e6:,.1f}M" if value >= 1e6 else f"${value:,.0f}"
 
 
+def md(text: str) -> str:
+    """Model-written text for st.markdown: escape $ so "$62.4M ... $25.5M" isn't read as math."""
+    return text.replace("$", r"\$")
+
+
 def use_example(question: str) -> None:
     st.session_state.question = question
     st.session_state.run = True
@@ -87,7 +92,7 @@ def show_details(result: AgentResult) -> None:
         return
     with st.expander("How this was calculated"):
         if result.explanation:
-            st.write(result.explanation)
+            st.markdown(md(result.explanation))
         st.code(result.sql.strip(), language="sql")
         if result.attempts > 1:
             st.caption("The first query had an error and was corrected automatically.")
@@ -97,11 +102,11 @@ def show_assumptions(result: AgentResult) -> None:
     if result.assumptions:
         with st.container(border=True):
             st.markdown("**Assumptions**")
-            st.markdown("\n".join(f"- {a}" for a in result.assumptions))
+            st.markdown("\n".join(f"- {md(a)}" for a in result.assumptions))
 
 
 def show_chart(result: AgentResult) -> None:
-    spec = choose_chart(result.columns, result.rows)
+    spec = choose_chart(result.columns, result.rows, sort_column(result.sql))
     if not spec:
         return
     data = pd.DataFrame(result.rows, columns=result.columns)
@@ -143,23 +148,23 @@ def show_result(result: AgentResult, coverage: str) -> None:
             if figures:
                 for column, (name, value) in zip(st.columns(len(figures)), figures):
                     column.metric(name, value)
-            st.write(result.answer)
+            st.markdown(md(result.answer))
         show_assumptions(result)
         show_chart(result)
         show_table(result)
         show_details(result)
 
     elif result.status == "no_data":
-        st.warning(result.answer or "No matching data was found.")
+        st.warning(md(result.answer or "No matching data was found."))
         show_assumptions(result)
         show_details(result)
 
     elif result.status == "clarify":
-        st.info(f"**Could you be more specific?** {result.clarifying_question}")
+        st.info(f"**Could you be more specific?** {md(result.clarifying_question)}")
         st.caption("Edit your question above and ask again.")
 
     elif result.status == "cannot_answer":
-        st.warning(result.reason)
+        st.warning(md(result.reason))
         st.caption(f"The data covers ticket sales from {coverage}: events, venues, "
                    "categories, listings, sales and commission.")
 
@@ -192,7 +197,8 @@ except sqlite3.Error as e:                          # a stale or incomplete data
     st.stop()
 coverage = f"{long_date(overview.first_date)} to {long_date(overview.last_date)}"
 st.caption(f"Ask a question in plain English about ticket sales from {coverage}. "
-           "Each question is answered on its own: to follow up, edit it and ask again.")
+           "Each question is answered on its own, with no memory of earlier ones, so "
+           "include everything it needs (e.g. the month and year).")
 show_overview(overview)
 
 with st.form("ask", border=False):

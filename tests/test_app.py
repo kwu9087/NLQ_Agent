@@ -70,6 +70,17 @@ def test_answer_shows_figures_assumptions_table_and_sql(run_app):
     assert at.code[0].value == "SELECT 1"
 
 
+def test_dollar_amounts_are_not_read_as_math(run_app):
+    # Two $ signs in one line would otherwise be rendered by Streamlit as LaTeX.
+    result = AgentResult("q", "answered", answer="Pop made $62.4M and Plays $25.5M.",
+                         assumptions=["Prices from $10 to $20."], sql="SELECT 1",
+                         columns=["category", "revenue"],
+                         rows=[("Pop", 62.4e6), ("Plays", 25.5e6)], attempts=1)
+    at, _ = run_app(result)
+    assert any(m.value == r"Pop made \$62.4M and Plays \$25.5M." for m in at.markdown)
+    assert any(r"Prices from \$10 to \$20." in m.value for m in at.markdown)
+
+
 def test_no_data_is_a_warning(run_app):
     at, _ = run_app(AgentResult("q", "no_data", answer="No sales were found for Hamilton.",
                                 sql="SELECT 1"))

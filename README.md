@@ -4,6 +4,13 @@ A natural language query (NLQ) agent that lets a non-technical user ask question
 
 > The README follows the five numbered requirements in the brief. The summary below fits on one screen; each part has the detail.
 
+<p align="center">
+  <img src="docs/screenshots/answer.png" width="640"
+       alt="The app answering &quot;Show me the top 5 event categories by total revenue&quot;: a plain-English answer, the assumptions made, a bar chart of revenue by category, the result table, and the SQL that was run">
+  <br>
+  <em>The page after one of the example questions: answer, assumptions, chart, rows and the SQL that ran.</em>
+</p>
+
 ## At a glance
 
 **What it does:** you ask a question about ticket sales in plain English. Claude writes one read-only SQL query, the query runs against a SQLite database, and Claude writes a short answer. The page shows the answer, any assumptions made, a chart, the rows behind it, and the SQL.
@@ -30,7 +37,7 @@ streamlit run app.py                                   # http://localhost:8501
 
 - **Accuracy set:** 24 of 24 questions pass, with figures checked against reference queries on the raw tables ([report](evals/last_run.md)).
 - **Stress test:** 18 harder questions, all figures correct. It found three problems, now fixed and covered by tests.
-- **Offline tests:** 91 pass, with no API calls.
+- **Offline tests:** 94 pass, with no API calls.
 - **Independent review:** a code review found and confirmed 15 bugs, all now fixed with tests (see [Part 5](#independent-review)).
 
 ---
@@ -413,7 +420,7 @@ question
 
 **Settings** (environment variables, all optional): `NLQ_MODEL` (default `claude-opus-5-5`), `NLQ_SQL_EFFORT` (default `medium`), `NLQ_ANSWER_EFFORT` (default `medium`), `NLQ_TODAY` (pins today's date, for tests and demos), `NLQ_DB_PATH`.
 
-**Tests:** `pytest` runs 91 tests with no API calls. See [Testing](#testing) in Part 5.
+**Tests:** `pytest` runs 94 tests with no API calls. See [Testing](#testing) in Part 5.
 
 ### Accuracy test set
 
@@ -542,9 +549,18 @@ Within Claude, there are three tiers. Prices are per million tokens, input / out
 
 ### Why not a chat window
 
-The brief rules out multi-turn conversation memory, so each question is answered on its own. A chat layout would suggest the agent remembers earlier messages when it doesn't. The page is instead **one question in, one response out.** To follow up, the user edits the question and asks again.
+The brief rules out multi-turn conversation memory, so each question is answered on its own. A chat layout would suggest the agent remembers earlier messages when it doesn't. The page is instead **one question in, one response out.** There are no follow-up questions: each question must carry its own context. "Which events had the priciest tickets in March 2025?" works; "and which were the priciest?" after an earlier question does not, because the agent never sees the earlier one. The caption under the title says this.
 
 ### What the page shows
+
+Before the first question, the page shows what the data holds and offers three example questions:
+
+<p align="center">
+  <img src="docs/screenshots/home.png" width="640"
+       alt="The app before any question: four headline figures (events, venues, tickets sold, gross sales), a folded &quot;What's in the data&quot; section, the question box and three example-question buttons">
+</p>
+
+After a question, it shows the parts below (see the [screenshot at the top](#nlq-agent-natural-language-query-over-sql) for a full example).
 
 | Part | Purpose | Shown |
 |---|---|---|
@@ -681,7 +697,7 @@ The app opens at `http://localhost:8501`. Try one of the example buttons.
 
 | Command | What it does | API calls |
 |---|---|---|
-| `pytest` | 91 offline tests: SQL safety, the question-to-answer flow with a fake model, chart choices, the page, the accuracy checker | None |
+| `pytest` | 94 offline tests: SQL safety, the question-to-answer flow with a fake model, chart choices, the page, the accuracy checker | None |
 | `python -m evals.run` | The 24-question accuracy test set against the live model. Writes `evals/last_run.md` | About 45 (roughly $1–2 on Opus 5.5) |
 | `python -m evals.run weekday commission` | Only the named cases | A few |
 
@@ -765,7 +781,7 @@ Details of each layer are in [Part 2](#how-a-question-is-answered) and [Defendin
 
 | Layer | What | Where |
 |---|---|---|
-| Offline, `pytest` (91 tests, about 10 seconds) | SQL check, authorizer, limits and concurrency (39), the flow with a fake model (14), display decisions (12), the page run headlessly (9), the accuracy checker (13), the data overview (4) | `tests/` |
+| Offline, `pytest` (94 tests, about 10 seconds) | SQL check, authorizer, limits and concurrency (39), the flow with a fake model (14), display decisions (14), the page run headlessly (10), the accuracy checker (13), the data overview (4) | `tests/` |
 | Live accuracy set (24 questions) | Figures checked against reference queries on the **raw tables**, plus expected outcomes, privacy, prompt injection, empty results, self-corrections | `evals/` |
 | Stress test (18 harder questions) | One-off review of realistic, complex questions. It found three problems, now fixed and each covered by an accuracy case | [Part 2](#stress-test) |
 

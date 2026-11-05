@@ -15,6 +15,8 @@ _ID = re.compile(r"(^|_)id$", re.I)
 # Values that read as points in time: 2025, 2025-03, 2025-03-14, 2025-Q3.
 _TIME_VALUE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?|-Q[1-4])?$")
 _TIME_NAME = re.compile(r"date|month|quarter|year|week|day", re.I)
+# The first sort key of a query's last ORDER BY, when it is a plain column name.
+_ORDER_BY = re.compile(r"\border\s+by\s+(?:\w+\.)?(\w+)\s*(?:asc|desc)?\s*(?:,|limit\b|$)", re.I)
 
 
 def label(column: str) -> str:
@@ -59,6 +61,12 @@ def _is_time_column(name: str, values: list) -> bool:
     return all(_TIME_VALUE.match(str(v)) for v in values)
 
 
+def sort_column(sql: Optional[str]) -> Optional[str]:
+    """The column a query ranks by: ORDER BY revenue DESC LIMIT 5 -> 'revenue'."""
+    matches = _ORDER_BY.findall((sql or "").strip().rstrip(";"))
+    return matches[-1] if matches else None
+
+
 def headline(columns: list[str], rows: list[tuple]) -> list[tuple[str, str]]:
     """For a one-row result, the figures to show large: [(label, formatted value)]."""
     if len(rows) != 1:
@@ -85,9 +93,13 @@ def bar_labels(spec: ChartSpec, columns: list[str], rows: list[tuple]) -> list[s
     return [f"{r[x]} ({r[w]})" for r in rows]
 
 
-def choose_chart(columns: list[str], rows: list[tuple]) -> Optional[ChartSpec]:
+def choose_chart(columns: list[str], rows: list[tuple],
+                 order_by: Optional[str] = None) -> Optional[ChartSpec]:
     """A line chart for values over time, a bar chart for a ranking or breakdown,
-    or None when a chart wouldn't help (one row, no numbers, too many bars)."""
+    or None when a chart wouldn't help (one row, no numbers, too many bars).
+
+    order_by is the column the query sorted on (see sort_column). A ranking's bars show
+    that column, so "top categories by revenue" charts revenue, not tickets."""
     if len(rows) < 2:
         return None
     numeric = _numeric_columns(columns, rows)
@@ -115,7 +127,7 @@ def choose_chart(columns: list[str], rows: list[tuple]) -> Optional[ChartSpec]:
     # The value to chart: a number that isn't a time axis, preferring one whose name
     # doesn't read as a date part (sale_year is a label, tickets is a value).
     values = [j for j in numeric if j not in time_columns]
-    values.sort(key=lambda j: bool(_TIME_NAME.search(columns[j])))
+    values.sort(key=lambda j: (bool(_TIME_NAME.search(columns[j])), columns[j] != order_by))
     if not values or _TIME_NAME.search(columns[values[0]]):
         return None
     y = columns[values[0]]
