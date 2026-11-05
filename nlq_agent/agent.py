@@ -11,6 +11,7 @@ Every outcome, including failures, comes back as an AgentResult. ask() never rai
 """
 
 import logging
+import os
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date
@@ -54,6 +55,12 @@ class Agent:
     @classmethod
     def create(cls) -> "Agent":
         """Build the agent with real dependencies (API key read from the environment)."""
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            # Without this check the SDK fails on the first question with an obscure
+            # TypeError. A missing key is a setup problem, so say so at startup.
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set. Add it to the .env file in the project "
+                "root (ANTHROPIC_API_KEY=sk-ant-...) or set it in your shell.")
         client = anthropic.Anthropic()
         return cls(Database(), SqlGenerator(client), AnswerWriter(client))
 
