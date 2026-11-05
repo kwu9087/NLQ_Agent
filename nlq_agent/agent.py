@@ -61,7 +61,8 @@ class Agent:
             raise RuntimeError(
                 "ANTHROPIC_API_KEY is not set. Add it to the .env file in the project "
                 "root (ANTHROPIC_API_KEY=sk-ant-...) or set it in your shell.")
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=config.API_TIMEOUT_S,
+                                     max_retries=config.API_MAX_RETRIES)
         return cls(Database(), SqlGenerator(client), AnswerWriter(client))
 
     def ask(self, question: str, today: Optional[date] = None) -> AgentResult:
@@ -91,7 +92,7 @@ class Agent:
             self._copy_plan(plan, result)
             result.attempts = attempt
             try:
-                rows = self.db.run(plan.sql)
+                query_result = self.db.run(plan.sql)
                 break
             except UnsafeQueryError as e:
                 # The model wrote something other than one SELECT. Don't retry.
@@ -111,16 +112,20 @@ class Agent:
                 plan = self.generator.repair(plan, str(e))
                 if plan.action != "query":       # the repair decided it can't be done
                     return self._non_query_result(question, plan)
-        result.columns, result.rows, result.truncated = rows.columns, rows.rows, rows.truncated
+        result.columns, result.rows, result.truncated = (
+            query_result.columns, query_result.rows, query_result.truncated)
         result.error_detail = ""
-        result.status = "no_data" if rows.is_empty else "answered"
+        result.status = "no_data" if query_result.is_empty else "answered"
         try:
-            result.answer = self.writer.write(question, plan, rows.columns, rows.rows,
-                                              rows.truncated)
+            result.answer = self.writer.write(question, plan, query_result.columns,
+                                              query_result.rows, query_result.truncated)
         except LLMError as e:
-            # The data is still worth showing even if the summary failed.
-            result.answer = e.user_message
-            result.error_detail = e.detail
+            # The query ran, so the data and SQL are still worth showing even if the
+            # written summary failed.
+            result.answer = ("No matching data was found." if result.status == "no_data"
+                             else "The data is below, but a written summary couldn't be "
+                                  "produced this time.")
+            result.error_detail = f"Answer step: {e.user_message} {e.detail}".strip()
         return result
 
     @staticmethod

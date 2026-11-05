@@ -112,7 +112,13 @@ def choose_chart(columns: list[str], rows: list[tuple]) -> Optional[ChartSpec]:
 
     if len(rows) > MAX_BAR_ROWS:
         return None
-    y = next(columns[j] for j in numeric + [numeric[0]] if j not in time_columns)
+    # The value to chart: a number that isn't a time axis, preferring one whose name
+    # doesn't read as a date part (sale_year is a label, tickets is a value).
+    values = [j for j in numeric if j not in time_columns]
+    values.sort(key=lambda j: bool(_TIME_NAME.search(columns[j])))
+    if not values or _TIME_NAME.search(columns[values[0]]):
+        return None
+    y = columns[values[0]]
     for i, name in enumerate(columns):
         values = [r[i] for r in rows]
         if i in numeric or i in time_columns or _ID.search(name):
@@ -122,6 +128,6 @@ def choose_chart(columns: list[str], rows: list[tuple]) -> Optional[ChartSpec]:
         if len(set(values)) == len(values):
             return ChartSpec("bar", name, y, is_money(y))
         # Repeated names (two games against the same opponent): add the date.
-        for t in time_columns:
-            return ChartSpec("bar", name, y, is_money(y), x_with=columns[t])
+        if time_columns:
+            return ChartSpec("bar", name, y, is_money(y), x_with=columns[time_columns[0]])
     return None

@@ -1,31 +1,37 @@
 """Query execution: a read-only connection with code-level safety checks.
 
 The system prompt tells the model to write one SELECT against the views. This module
-enforces it, so a tricked or mistaken model still can't change data or read private
-columns:
+enforces it, so a tricked or mistaken model still can't change data, read the raw
+tables or read private columns:
 
-  1. The file is opened read-only (mode=ro).
-  2. check_sql() accepts only a single statement that starts with SELECT or WITH.
-  3. An SQLite authorizer allows only reads. It denies the private columns of
-     `users` everywhere, and denies raw tables named directly in the query.
-  4. Results are capped at MAX_ROWS, and a progress handler stops slow queries.
+  1. The file is opened read-only (mode=ro), with a fresh connection for every query,
+     so concurrent users never share connection state.
+  2. check_sql() accepts only a single statement that starts with SELECT or WITH, and
+     rejects a WITH name that would pose as one of the views.
+  3. An SQLite authorizer allows only reads, and only of the views: a column of a raw
+     table can be read only from inside a view's definition. The private columns of
+     `users` are denied everywhere. Writes, PRAGMA and ATTACH are denied.
+  4. Results are capped at MAX_ROWS rows and MAX_VALUE_BYTES per value, and a progress
+     handler stops slow queries.
 """
 
 import re
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import quote
 
 from . import config
 
-VIEWS = {"venues", "sales_detail", "listing_detail", "event_summary", "users_public"}
 PRIVATE_COLUMNS = {("users", c) for c in ("firstname", "lastname", "email", "phone")}
 _DENIED_FUNCTIONS = {"load_extension"}
+MAX_VALUE_BYTES = 1_000_000
 
 
 class UnsafeQueryError(Exception):
-    """The SQL was rejected before running (not a single read-only query)."""
+    """The SQL was rejected: not a single read-only query. Never retried."""
 
 
 class QueryTimeoutError(Exception):
@@ -41,80 +47,148 @@ class QueryResult:
     is_empty: bool = field(init=False)
 
     def __post_init__(self):
-        # SUM() over nothing returns one row of NULLs. Treat that as empty too, so
-        # "no data" is never reported as zero.
-        self.is_empty = not self.rows or all(v is None for row in self.rows for v in row)
+        # An aggregate over nothing returns one row of NULLs, e.g. SUM() -> (None,),
+        # or SUM() with COUNT() -> (None, 0). Treat that as empty too, so "no data" is
+        # never reported as zero.
+        single_empty_row = (len(self.rows) == 1 and None in self.rows[0]
+                            and all(v in (None, 0) for v in self.rows[0]))
+        self.is_empty = not self.rows or single_empty_row
 
 
-_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
-_STRING = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+# Strings, quoted names and comments, matched left to right, so "--" inside a string
+# is not a comment and a quote inside a comment is not a string.
+_LEXEMES = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?(?:\*/|$)", re.S)
+# A WITH name: "name AS (" or "name(col, ...) AS (", optionally [NOT] MATERIALIZED.
+_CTE_NAME = re.compile(r"(\w+)\s*(?:\([^()]*\))?\s+AS\s+(?:NOT\s+)?(?:MATERIALIZED\s+)?\(",
+                       re.I)
 
 
-def check_sql(sql: str) -> str:
-    """Return the SQL ready to run, or raise UnsafeQueryError.
+def _blank_strings_and_comments(sql: str) -> str:
+    return _LEXEMES.sub(lambda m: "''" if m.group(0)[0] in "'\"" else " ", sql)
 
-    A cheap first filter: the authorizer is the real enforcement.
+
+def check_sql(sql: str, views: frozenset[str] = frozenset()) -> str:
+    """Return the SQL to run (unchanged apart from surrounding whitespace), or raise
+    UnsafeQueryError.
+
+    The checks look at a copy with strings and comments blanked out, so text inside
+    quotes can't hide a second statement or break the check. The original SQL is what
+    runs. The authorizer is the real enforcement; this rejects the obvious cases early
+    with a clear message.
     """
-    stripped = _COMMENT.sub(" ", sql).strip().rstrip(";").strip()
-    if not stripped:
+    code = _blank_strings_and_comments(sql).strip().rstrip(";").strip()
+    if not code:
         raise UnsafeQueryError("The query is empty.")
-    if ";" in _STRING.sub("''", stripped):
+    if ";" in code:
         raise UnsafeQueryError("Only one statement is allowed.")
-    first_word = stripped.split(None, 1)[0].upper()
+    first_word = code.split(None, 1)[0].upper()
     if first_word not in ("SELECT", "WITH"):
         raise UnsafeQueryError(f"Only SELECT queries are allowed, not {first_word}.")
-    return stripped
+    posing = {name for name in _CTE_NAME.findall(code) if name.lower() in views}
+    if posing:
+        raise UnsafeQueryError(f"A WITH name can't reuse a view's name: {sorted(posing)}.")
+    return sql.strip()
 
 
-def _authorizer(action, arg1, arg2, _db, source):
-    if action == sqlite3.SQLITE_SELECT:
-        return sqlite3.SQLITE_OK
-    if action == sqlite3.SQLITE_READ:
-        table, column = arg1, arg2
-        if (table, column) in PRIVATE_COLUMNS:
+def make_authorizer(views: frozenset[str]):
+    """The SQLite authorizer for agent queries. `views` are the queryable view names."""
+
+    def authorize(action, arg1, arg2, _db, source):
+        if action == sqlite3.SQLITE_SELECT:
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_READ:
+            table, column = arg1, arg2
+            if (table, column) in PRIVATE_COLUMNS:
+                return sqlite3.SQLITE_DENY
+            # Allowed: a view's own columns (from the query or a WITH), reads a view's
+            # definition makes of the raw tables (source is that view), and row-only
+            # reads (column '', as in COUNT(*) or a join), which reveal no values.
+            # Anything else is a raw table read from the query or from inside a WITH.
+            if table in views or source in views or column == "":
+                return sqlite3.SQLITE_OK
             return sqlite3.SQLITE_DENY
-        # source is None when the read comes straight from the query text rather than
-        # from inside a view. Column '' is a row count (COUNT(*)), which reveals nothing.
-        if source is None and table not in VIEWS and column != "":
-            return sqlite3.SQLITE_DENY
-        return sqlite3.SQLITE_OK
-    if action == sqlite3.SQLITE_FUNCTION:
-        return sqlite3.SQLITE_DENY if arg2 in _DENIED_FUNCTIONS else sqlite3.SQLITE_OK
-    if action == getattr(sqlite3, "SQLITE_RECURSIVE", -1):
-        return sqlite3.SQLITE_OK      # recursive WITH; the timeout bounds it
-    return sqlite3.SQLITE_DENY        # PRAGMA, ATTACH, writes, schema changes, ...
+        if action == sqlite3.SQLITE_FUNCTION:
+            return sqlite3.SQLITE_DENY if arg2 in _DENIED_FUNCTIONS else sqlite3.SQLITE_OK
+        if action == getattr(sqlite3, "SQLITE_RECURSIVE", -1):
+            return sqlite3.SQLITE_OK      # recursive WITH; the timeout bounds it
+        return sqlite3.SQLITE_DENY        # PRAGMA, ATTACH, writes, schema changes, ...
+
+    return authorize
+
+
+def _unique(columns: list[str]) -> list[str]:
+    """Make repeated column names unique (tickets, tickets_2) so every column can be
+    shown; SELECT a.tickets, b.tickets would otherwise give two 'tickets' columns."""
+    seen: dict[str, int] = {}
+    out = []
+    for name in columns:
+        seen[name] = seen.get(name, 0) + 1
+        out.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
+    return out
 
 
 class Database:
+    """Runs agent queries against data/tickit.db. Safe to share between threads: every
+    run() opens its own read-only connection (a few milliseconds in SQLite)."""
+
     def __init__(self, path: Path = config.DB_PATH):
-        if not Path(path).exists():
+        path = Path(path)
+        if not path.exists():
             raise FileNotFoundError(
                 f"Database not found at {path}. Build it with: python scripts/build_db.py")
-        self._conn = sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True,
-                                     check_same_thread=False)
-        self._conn.set_authorizer(_authorizer)
+        self._uri = f"file:{quote(path.resolve().as_posix())}?mode=ro"
+        # The queryable views are the ones the build created from scripts/views.sql.
+        try:
+            with closing(self._connect()) as conn:
+                self.views = frozenset(r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'view'"))
+        except sqlite3.DatabaseError as e:
+            raise RuntimeError(f"The database at {path} can't be read ({e}). Rebuild it "
+                               "with: python scripts/build_db.py") from e
+        if not self.views:
+            raise RuntimeError(f"The database at {path} has no views. Rebuild it with: "
+                               "python scripts/build_db.py")
+        self._authorizer = make_authorizer(self.views)
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self._uri, uri=True)
 
     def run(self, sql: str, max_rows: int = config.MAX_ROWS,
             timeout_s: float = config.QUERY_TIMEOUT_S) -> QueryResult:
-        """Run one read-only query. Raises UnsafeQueryError, QueryTimeoutError or
-        sqlite3.Error (malformed SQL, unknown column, not authorized)."""
-        sql = check_sql(sql)
+        """Run one read-only query.
+
+        Raises UnsafeQueryError (not a single read-only query, including a write the
+        authorizer blocked), QueryTimeoutError, or sqlite3.Error (malformed SQL, an
+        unknown column, or a read the authorizer denied, which the model can repair).
+        """
+        sql = check_sql(sql, self.views)
         start = time.monotonic()
         deadline = start + timeout_s
-        self._conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
+        conn = self._connect()
         try:
-            cursor = self._conn.execute(sql)
+            conn.set_authorizer(self._authorizer)
+            if hasattr(conn, "setlimit"):                   # Python 3.11+
+                conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
+            conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
+            cursor = conn.execute(sql)
             rows = cursor.fetchmany(max_rows + 1)
+            columns = _unique([d[0] for d in cursor.description or []])
         except sqlite3.OperationalError as e:
             if "interrupted" in str(e):
                 raise QueryTimeoutError(f"The query took longer than {timeout_s:g} seconds.") from e
             raise
+        except sqlite3.DatabaseError as e:
+            # "not authorized" is a write, PRAGMA or ATTACH that got past check_sql.
+            # "prohibited" is a denied read: a raw table or private column, which the
+            # model may have used by mistake, so it stays repairable.
+            if "not authorized" in str(e):
+                raise UnsafeQueryError(f"The query tried more than reading data ({e}).") from e
+            raise
         finally:
-            self._conn.set_progress_handler(None, 0)
-        columns = [d[0] for d in cursor.description or []]
+            conn.close()
         return QueryResult(columns=columns, rows=rows[:max_rows],
                            truncated=len(rows) > max_rows,
                            elapsed_s=time.monotonic() - start)
 
     def close(self):
-        self._conn.close()
+        """Kept for callers that close the database; connections are per query."""

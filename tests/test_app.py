@@ -1,5 +1,6 @@
 """Offline tests for app.py: the page is run headlessly with a fake agent (no API calls)."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -123,3 +124,14 @@ def test_overview_is_shown_before_any_question(monkeypatch):
     text = " ".join(m.value for m in at.markdown)
     assert "Pop (4,998 events)" in text and "**Sales:** Every ticket purchase." in text
     assert any("Includes: Sale date, Tickets, Sale total" in c.value for c in at.caption)
+
+
+def test_stale_database_shows_a_rebuild_message(monkeypatch):
+    def stale(db, views_sql):
+        raise sqlite3.OperationalError("no such table: sales_detail")
+    monkeypatch.setattr(catalog, "load_overview", stale)
+    monkeypatch.setattr(Agent, "create", classmethod(lambda cls: FakeAgent(None)))
+    st.cache_resource.clear()
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    assert not at.exception
+    assert "build_db.py" in at.error[0].value

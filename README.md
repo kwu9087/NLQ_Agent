@@ -2,7 +2,36 @@
 
 A natural language query (NLQ) agent that lets a non-technical user ask questions about ticketing data in plain English. The agent turns the question into SQL, runs it against a database, and returns a readable answer together with the SQL it ran.
 
-> **Status:** Draft. The README follows the five numbered requirements in the brief. **Parts 1–4** (Data Layer, Agent Behavior, Foundation Model, Interface) are built and tested. **Part 5** (Code Quality: setup guide, review and submission notes) is in progress.
+> The README follows the five numbered requirements in the brief. The summary below fits on one screen; each part has the detail.
+
+## At a glance
+
+**What it does:** you ask a question about ticket sales in plain English. Claude writes one read-only SQL query, the query runs against a SQLite database, and Claude writes a short answer. The page shows the answer, any assumptions made, a chart, the rows behind it, and the SQL.
+
+**Quick start** on macOS or Linux (on Windows, follow [Setup](#setup), which has the PowerShell commands):
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python scripts/build_db.py                             # builds data/tickit.db in ~10 s
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+streamlit run app.py                                   # http://localhost:8501
+```
+
+| Part | Choice | Why, in one line |
+|---|---|---|
+| [1. Data](#part-1-data-layer) | Amazon's public TICKIT ticketing dataset in SQLite, cleaned, shifted to 2025, plus generated Brooklyn Nets games at Barclays Center | The closest public match to venue ticketing data, with real multi-table joins. The brief's example questions work |
+| [2. Agent](#part-2-agent-behavior) | Two Claude calls (write the SQL, then write the answer) over five curated views | The views make most query mistakes impossible, so the prompt stays short. Unclear questions get stated assumptions or one clarifying question |
+| [3. Model](#part-3-foundation-model) | Claude Opus 5.5, effort `medium` | Accuracy on look-right-but-wrong numbers matters most. Effort was chosen by measurement |
+| [4. Interface](#part-4-interface) | One Streamlit page, one question at a time | Built for a non-technical user. A data overview shows what can be asked before the first question |
+| [5. Code quality](#part-5-code-quality) | Agent, query execution and display kept apart. Every failure becomes a readable message | Read-only database, an authorizer that allows only the views, row, size and time limits |
+
+**Results:**
+
+- **Accuracy set:** 24 of 24 questions pass, with figures checked against reference queries on the raw tables ([report](evals/last_run.md)).
+- **Stress test:** 18 harder questions, all figures correct. It found three problems, now fixed and covered by tests.
+- **Offline tests:** 91 pass, with no API calls.
+- **Independent review:** a code review found and confirmed 15 bugs, all now fixed with tests (see [Part 5](#independent-review)).
 
 ---
 
@@ -141,8 +170,8 @@ The issues fall into two kinds, and each kind is handled differently.
 
 **Type B, correct data that is easy to misread: left as is and taught to the agent.** These values are accurate. They are simply easy to query wrongly. The agent learns about them through its context instead:
 
-- Column descriptions in the schema it receives (for example, "`pricepaid` is the total for the sale; average ticket price is `SUM(pricepaid) / SUM(qtysold)`")
-- Query rules (for example, "group venues by `venueid` and show the city alongside the name")
+- Views with clear column names and comments (for example, `pricepaid` becomes `sale_total`, "the TOTAL paid for all tickets in this sale")
+- A few query rules (for example, "average ticket price is `SUM(sale_total) / SUM(tickets)`, never `AVG`")
 - A few example questions paired with correct SQL that show these patterns
 
 **Why we split it this way:**
@@ -202,7 +231,7 @@ Consistency checks
 
 **Why whole weeks:** Shifting by a whole number of weeks keeps every date on the same weekday. Weekend and weekday patterns stay real, and a Saturday matinee is still on a Saturday. A whole-year shift (2008 to 2025) would move every event to a different weekday.
 
-**Why this range:** 888 weeks is the whole-week shift that puts the data closest to calendar 2025. Nearly all activity is in 2025, so questions like "in 2025" or "in Q3" behave as expected. The cost is that the last week spills into January 2026 (508 sales) and that the data ends 10 months before today, so "last month" still returns nothing. The agent will need to say what date range the data covers when a question falls outside it.
+**Why this range:** 888 weeks is the whole-week shift that puts the data closest to calendar 2025. Nearly all activity is in 2025, so questions like "in 2025" or "in Q3" behave as expected. The cost is that the last week spills into January 2026 (508 sales) and that the data ends 10 months before today, so "last month" still returns nothing. The agent says what date range the data covers when a question falls outside it (see [How the agent responds](#how-the-agent-responds)).
 
 **What changed in the `date` table:**
 
@@ -252,11 +281,11 @@ The three example questions in the brief now return data:
 | Barclays Center events with the highest average ticket price in 2025 | Nets vs. 76ers (Feb 5) $1,149.71, Nets vs. Rockets (Jan 20) $1,007.80, Nets vs. Celtics (Feb 25) $695.92 |
 | Top 5 event categories by total revenue | Pop $62.4M, Plays $25.5M, Musicals $16.3M, Opera $6.5M, NBA $1.6M |
 
-As written in the brief, the first two questions say "last month" and "in 2024", and both still fall outside the data range. Handling them is the agent's job: it should say what range the data covers rather than return an empty answer.
+As written in the brief, the first two questions say "last month" and "in 2024", and both still fall outside the data range. The agent handles them by saying what range the data covers and answering for the nearest period with data, rather than returning an empty answer.
 
 ### Agent-facing views
 
-The agent never queries the tables directly. It queries five **views** defined in [`scripts/views.sql`](scripts/views.sql). A view is a saved query that looks like a table: its definition is stored in the database, and its rows are computed from the real tables each time it is queried. It stores no data, so it can never fall out of sync.
+The agent can't query the tables directly: the database layer allows reads only through five **views** defined in [`scripts/views.sql`](scripts/views.sql). A view is a saved query that looks like a table: its definition is stored in the database, and its rows are computed from the real tables each time it is queried. It stores no data, so it can never fall out of sync.
 
 **Why:** Part 1 lists data that is correct but easy to misread. Each of those traps could be handled with a rule in the system prompt, but every rule is something the model can overlook. The views build the rules into the structure instead: the joins are done once, correctly, columns are named for what they mean, and private columns don't exist. The prompt stays short, and many mistakes become impossible rather than merely discouraged.
 
@@ -375,7 +404,7 @@ question
 
 - **Two model calls with separate prompts.** The SQL step uses [`prompts/system_prompt.md`](prompts/system_prompt.md). The answer step uses [`prompts/answer_prompt.md`](prompts/answer_prompt.md), which sees only the question, the assumptions and the rows (at most 50). Keeping the steps apart keeps each prompt short, and the answer step can't change the query.
 - **Structured output.** The SQL step must return JSON matching a fixed schema, so its reply is always readable. The six fields are always present, and the ones that don't apply are left empty.
-- **One repair attempt.** A malformed query or unknown column is sent back to the model with the error message, and the corrected query runs once. A second failure gives the user a plain-English error. A query that is not a single `SELECT` is never retried. Neither is a query that runs past the time limit: the user is asked to narrow the question instead.
+- **One repair attempt.** A malformed query or unknown column is sent back to the model with the error message, and the corrected query runs once. A second failure gives the user a plain-English error. A query that tries anything other than reading (caught by the statement check or by the authorizer) is never retried. Neither is a query that runs past the time limit: the user is asked to narrow the question instead. A read the authorizer denies, such as a raw table named by mistake, can be repaired, and the model is told to use only the views.
 - **Empty results.** Both "no rows" and "one row of nothing" (such as `SUM` over no sales) count as no data. The answer step is told never to report them as zero.
 - **Every failure is a result, not a crash.** `Agent.ask()` always returns an `AgentResult`, with a user-facing message and the technical detail kept apart. API key problems, rate limits, network errors, a model refusal and unexpected exceptions each have their own message.
 - **Refusal fallback.** Requests use the API's server-side fallback (`fallbacks: "default"`). If Opus 5.5 declines a request, the API reruns it on Anthropic's recommended fallback model. It can be turned off with `NLQ_USE_FALLBACKS=0`.
@@ -384,7 +413,7 @@ question
 
 **Settings** (environment variables, all optional): `NLQ_MODEL` (default `claude-opus-5-5`), `NLQ_SQL_EFFORT` (default `medium`), `NLQ_ANSWER_EFFORT` (default `medium`), `NLQ_TODAY` (pins today's date, for tests and demos), `NLQ_DB_PATH`.
 
-**Tests:** `pytest` runs 56 tests with no API calls. They cover the SQL check and authorizer (including private columns hidden inside a `WITH`), row limits, timeouts and empty results, every branch of the flow (using a fake model), the accuracy checker below, and the interface (Part 4).
+**Tests:** `pytest` runs 91 tests with no API calls. See [Testing](#testing) in Part 5.
 
 ### Accuracy test set
 
@@ -445,10 +474,10 @@ The system prompt tells the model to treat the question as data and to refuse an
 | Layer | Control | Stops |
 |---|---|---|
 | Prompt | The question is never treated as instructions. Refuses off-topic requests and data changes. The privacy rules | Most injection attempts and accidental privacy leaks |
-| Database connection | Opened read-only (`mode=ro`) | Any data change, even if the model is tricked into writing one |
-| SQL check before running | Exactly one statement, which must be a `SELECT` or `WITH` query | Stacked statements, `ATTACH`, `PRAGMA` |
-| SQLite authorizer | Allows only reads. Denies `users.firstname`, `lastname`, `email` and `phone` everywhere. Denies raw tables named directly in the query | Reaching names, emails or phone numbers in `users`, however the SQL is phrased |
-| Limits | Maximum rows returned and a query timeout | Runaway queries and huge result sets |
+| Database connection | Opened read-only (`mode=ro`), a new connection for every query | Any data change, even if the model is tricked into writing one. Concurrent users never share connection state |
+| SQL check before running | Exactly one statement, which must be a `SELECT` or `WITH` query. Strings and comments are blanked out for the check only; the SQL runs as written. A `WITH` name may not reuse a view's name | Stacked statements, `ATTACH`, `PRAGMA`, a `WITH` posing as a view |
+| SQLite authorizer | Allows only reads, and only through the views: a raw table's columns can be read only from inside a view's definition, whether the query names the table directly or inside a `WITH`. Denies `users.firstname`, `lastname`, `email` and `phone` everywhere, even inside a view | Reading raw tables or the schema, and reaching names, emails or phone numbers, however the SQL is phrased |
+| Limits | 100 rows, 1 MB per value, 5-second timeout | Runaway queries, huge result sets, oversized values |
 | Answer-writing step | Result rows are passed to the model as data, never as instructions | Instructions hidden in stored text (indirect injection) |
 
 ---
@@ -550,8 +579,8 @@ A user can't ask good questions about data they can't see. So before the first q
 - **The figures are live.** They are queried through `Database.run()`, the same read-only, permission-checked path as the agent's SQL. They are cached for an hour.
 - **The subject areas come from `scripts/views.sql`,** the same file that is the schema in the agent's prompt. Each view has an `-- Area: <name> | <sentence>` line written for business users. The fields are the view's real columns, with internal IDs left out.
 - **The two kinds of comment are kept apart.** The other comments in `views.sql` are technical notes for the model ("NOT unique", "use for grouping"), so they are not shown to users. Enterprise data catalogs make the same split between business descriptions and technical notes.
-- **One definition serves both,** so the overview and the agent can't fall out of step. Add a view with an Area line, and both pick it up.
-- **Private columns can't leak into it.** It lists columns through the same authorizer, so `email` or `phone` can't appear.
+- **One definition serves both,** so the overview and the agent can't fall out of step. Add a view with an Area line and rebuild the database: the agent's schema, the authorizer's list of views and the overview all pick it up.
+- **It shows exactly what the agent can query.** It lists each view's real columns, so names and contact details, which no view exposes, can't appear.
 
 **On an enterprise database** the shape stays the same, but three parts change:
 
@@ -587,14 +616,12 @@ The agent returns one result object (action, answer, explanation, assumptions, S
 ### Limitations
 
 - It runs on the user's machine (`streamlit run app.py` opens it at `http://localhost:8501`). Hosting it online is out of scope, though Streamlit Community Cloud could host it later.
-- Each interaction reruns the script. The database connection and Claude client are created once and reused (`st.cache_resource`), and the current result is kept in `st.session_state`.
+- Each interaction reruns the script. The agent and its Claude client are created once and shared (`st.cache_resource`), and each browser session keeps its own result in `st.session_state`. Several people can use it at once: every query opens its own read-only database connection, a test checks that concurrent queries don't block each other, and the Claude client has a 90-second timeout.
 - The styling options are limited. That fits the brief, which asks for a simple interface, not a polished one.
 
 ---
 
 ## Part 5: Code Quality
-
-> **Draft.**
 
 ### Setup
 
@@ -654,7 +681,7 @@ The app opens at `http://localhost:8501`. Try one of the example buttons.
 
 | Command | What it does | API calls |
 |---|---|---|
-| `pytest` | 66 offline tests: SQL safety, the question-to-answer flow with a fake model, chart choices, the page, the accuracy checker | None |
+| `pytest` | 91 offline tests: SQL safety, the question-to-answer flow with a fake model, chart choices, the page, the accuracy checker | None |
 | `python -m evals.run` | The 24-question accuracy test set against the live model. Writes `evals/last_run.md` | About 45 (roughly $1–2 on Opus 5.5) |
 | `python -m evals.run weekday commission` | Only the named cases | A few |
 
@@ -676,6 +703,7 @@ print(result.sql)
 | `ANTHROPIC_API_KEY is not set` | No key found. Add it to `.env` (step 3) and restart the app |
 | `The AI service rejected the API key` | The key is wrong, revoked or has no credit. Check it in the Claude Console |
 | `Database not found at ...` | Step 2 hasn't been run |
+| `The database looks out of date` or `has no views` | The database is from an old or failed build. Run step 2 again |
 | `PermissionError` when rebuilding the database | The app (or another Python process) has the database open. Stop it, rebuild, start it again |
 | `Port 8501 is already in use` | Another app is running. Stop it, or use `streamlit run app.py --server.port 8502` |
 
@@ -710,7 +738,7 @@ The brief asks for three concerns to be kept apart:
 | To... | Change |
 |---|---|
 | Teach a new question pattern | Add a rule or an example to `prompts/system_prompt.md`, and a case to `evals/cases.py` to keep it working |
-| Expose more data | Add a view to `scripts/views.sql` with column comments for the model and an `-- Area:` line for users, then rebuild. The prompt and the page's overview pick it up automatically. Add the view name to `VIEWS` in `database.py` |
+| Expose more data | Add a view to `scripts/views.sql` with column comments for the model and an `-- Area:` line for users, then rebuild. The prompt, the authorizer and the page's overview pick it up automatically. If the view covers something the prompt's data section describes (coverage dates, categories), update that too |
 | Try another Claude model or effort level | `NLQ_MODEL`, `NLQ_SQL_EFFORT`, `NLQ_ANSWER_EFFORT`, then run `python -m evals.run` to compare |
 | Add a different interface | Call `Agent.ask(question)` and display the `AgentResult` |
 
@@ -737,11 +765,30 @@ Details of each layer are in [Part 2](#how-a-question-is-answered) and [Defendin
 
 | Layer | What | Where |
 |---|---|---|
-| Offline, `pytest` (66 tests, about 7 seconds) | SQL check and authorizer (21), the flow with a fake model (10), display decisions (10), the page run headlessly (8), the accuracy checker (13), the data overview (4) | `tests/` |
+| Offline, `pytest` (91 tests, about 10 seconds) | SQL check, authorizer, limits and concurrency (39), the flow with a fake model (14), display decisions (12), the page run headlessly (9), the accuracy checker (13), the data overview (4) | `tests/` |
 | Live accuracy set (24 questions) | Figures checked against reference queries on the **raw tables**, plus expected outcomes, privacy, prompt injection, empty results, self-corrections | `evals/` |
 | Stress test (18 harder questions) | One-off review of realistic, complex questions. It found three problems, now fixed and each covered by an accuracy case | [Part 2](#stress-test) |
 
 The accuracy checker uses value matching and a few wording patterns, not a second model acting as a judge. That makes it cheap, repeatable and easy to read. The cost is that wording checks can be wrong in both directions. It flagged correct answers four times during development, and each case is now covered by a test of the checker itself.
+
+### Independent review
+
+As a final check, a separate agent reviewed the code and README. It was given the brief and the code but not our own notes, so it wouldn't just confirm our view. It found 15 bugs; each was reproduced before being fixed, and each now has a test that fails on the old code:
+
+| Severity | Problem | Fix |
+|---|---|---|
+| High | Two questions at the same moment froze the whole app: every session shared one database connection | A new read-only connection for every query |
+| Medium | A `WITH` query could read raw tables and the schema list, getting past the "views only" rule. Private user columns stayed blocked | The authorizer now allows a raw table only from inside a view's definition. A `WITH` can't reuse a view's name |
+| Medium | The safety check stripped "comments" inside quoted text, so `LIKE '%--%'` failed and `'/*'` returned a wrong value | Strings and comments are blanked only in a copy used for the checks. The SQL runs as written |
+| Medium | A write caught only by the authorizer was retried as if it were a typo | Treated as unsafe, never retried |
+| Medium | Three result shapes crashed the page: a year as the only number, repeated column names, a stale database | Each one is handled, with a rebuild message for the database |
+| Low | `(nothing, 0)` counted as an answer, not "no data". A year could be charted as the value. No limit on value size. No API timeout | Fixed, with a 1 MB value limit and a 90-second timeout |
+
+It also found tests that would have passed with the code broken. For example, three of the four private-column tests were stopped by a different rule first. They now test each rule on its own.
+
+Rerunning the accuracy set after these fixes found two prompt problems, both now fixed:
+- **Rule 4 only covered relative dates.** Tightening its wording ("last month" → the nearest *full* month) made the model decline a question with a named year outside the data ("in 2024") instead of answering for 2025. The rule now covers named periods too. The case passed 3 of 3 after the fix.
+- **The answer step dropped the reading of a figure.** It is told not to repeat the assumptions, so it sometimes said "buyers paid more than the asking price" and left the explanation in the assumptions alone. It now has to word figures consistently with the assumptions. The case went from failing about one run in four to passing 5 of 5.
 
 ### Trade-offs
 

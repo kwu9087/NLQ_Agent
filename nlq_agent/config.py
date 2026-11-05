@@ -38,6 +38,9 @@ SQL_EFFORT = os.environ.get("NLQ_SQL_EFFORT", "medium")
 # sometimes corrected a figure mid-answer ("4,812... I mean 4,810"); "medium", the
 # model's default, did not, for about 1 second more per question.
 ANSWER_EFFORT = os.environ.get("NLQ_ANSWER_EFFORT", "medium")
+# Claude client: a question normally takes 5-15 seconds per call.
+API_TIMEOUT_S = 90.0
+API_MAX_RETRIES = 1
 SQL_MAX_TOKENS = 16000
 ANSWER_MAX_TOKENS = 8000
 # Server-side refusal fallback: if the model declines, the API reruns the request

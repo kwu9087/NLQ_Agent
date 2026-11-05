@@ -103,16 +103,42 @@ def test_private_column_attempt_is_blocked(db):
     assert result.status == "error" and not result.rows
 
 
-def test_empty_result_is_no_data_not_zero(db):
-    plan = query("SELECT SUM(tickets) AS tickets FROM sales_detail WHERE sale_year = 2028")
-    result = make(db, [plan]).ask("Tickets in 2028?", TODAY)
-    assert result.status == "no_data" and result.answer
+@pytest.mark.parametrize("sql", [
+    "SELECT SUM(tickets) AS tickets FROM sales_detail WHERE sale_year = 2028",
+    # A total with a count over nothing is (None, 0): still no data, not "0 tickets".
+    "SELECT SUM(tickets) AS tickets, COUNT(*) AS sales FROM sales_detail WHERE sale_year = 2028",
+])
+def test_empty_result_is_no_data_not_zero(db, sql):
+    assert make(db, [query(sql)]).ask("Tickets in 2028?", TODAY).status == "no_data"
 
 
 def test_answer_failure_still_returns_rows(db):
     result = make(db, [query(GOOD_SQL)], FakeWriter(fail=True)).ask("Top categories?", TODAY)
-    assert result.status == "answered" and result.rows
-    assert "shown below" in result.answer
+    assert result.status == "answered" and result.rows and result.sql
+    assert "summary couldn't be produced" in result.answer
+    assert result.error_detail.startswith("Answer step:")
+
+
+def test_answer_failure_on_empty_result_doesnt_promise_data(db):
+    plan = query("SELECT SUM(tickets) AS tickets FROM sales_detail WHERE sale_year = 2028")
+    result = make(db, [plan], FakeWriter(fail=True)).ask("Tickets in 2028?", TODAY)
+    assert (result.status, result.answer) == ("no_data", "No matching data was found.")
+
+
+def test_write_caught_only_by_the_authorizer_is_not_retried(db):
+    # Starts with WITH, so it passes the statement check; the authorizer blocks it.
+    agent = make(db, [query("WITH x AS (SELECT 1) DELETE FROM sales")])
+    result = agent.ask("Delete everything", TODAY)
+    assert result.status == "error" and result.attempts == 1
+    assert agent.generator.repair_errors == []
+
+
+def test_raw_table_read_by_mistake_is_repaired(db):
+    agent = make(db, [query("SELECT catname, COUNT(*) FROM category GROUP BY catname"),
+                      query(GOOD_SQL)])
+    result = agent.ask("Top categories?", TODAY)
+    assert result.status == "answered" and result.attempts == 2
+    assert "prohibited" in agent.generator.repair_errors[0]
 
 
 def test_model_errors_become_results(db):

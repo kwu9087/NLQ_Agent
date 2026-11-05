@@ -6,6 +6,7 @@ This file only draws an AgentResult. The agent (nlq_agent/) knows nothing about
 Streamlit, and display decisions such as chart choice live in ui/display.py.
 """
 
+import sqlite3
 from datetime import date
 
 import altair as alt
@@ -183,7 +184,12 @@ except (RuntimeError, FileNotFoundError) as e:     # missing API key or database
     st.error(f"The app isn't set up yet. {e}")
     st.stop()
 
-overview = get_overview(agent)
+try:
+    overview = get_overview(agent)
+except sqlite3.Error as e:                          # a stale or incomplete database
+    st.error(f"The database looks out of date ({e}). Rebuild it with "
+             "`python scripts/build_db.py`, then restart the app.")
+    st.stop()
 coverage = f"{long_date(overview.first_date)} to {long_date(overview.last_date)}"
 st.caption(f"Ask a question in plain English about ticket sales from {coverage}. "
            "Each question is answered on its own: to follow up, edit it and ask again.")

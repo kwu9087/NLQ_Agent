@@ -3,8 +3,8 @@
     python -m evals.run                  # every case
     python -m evals.run brief_top_categories weekday   # selected cases
 
-Needs ANTHROPIC_API_KEY. Each case makes one or two model calls (about 20 cases, a
-few dollars at most on Opus 5.5). Writes a full report, with every answer and SQL query,
+Needs ANTHROPIC_API_KEY. Each case makes one or two model calls (24 cases,
+about $1-2 on Opus 5.5). Writes a full report, with every answer and SQL query,
 to evals/last_run.md, and exits with status 1 if any case fails.
 """
 

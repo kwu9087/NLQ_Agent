@@ -71,3 +71,13 @@ def test_no_chart_when_it_would_not_help():
     assert choose_chart(["show", "tickets"], many) is None                          # too many bars
     repeated = [("Nets vs. Rockets", 1007.8), ("Nets vs. Rockets", 456.92)]
     assert choose_chart(["event", "avg_ticket_price"], repeated) is None            # can't tell apart
+
+
+def test_no_chart_when_the_only_number_is_a_year():
+    # Used to raise StopIteration and crash the page.
+    assert choose_chart(["show", "first_year"], [("A", 2025), ("B", 2026)]) is None
+
+
+def test_a_year_column_is_not_plotted_as_the_value():
+    spec = choose_chart(["event_name", "sale_year", "tickets"], [("A", 2025, 5), ("B", 2025, 7)])
+    assert spec.y == "tickets"

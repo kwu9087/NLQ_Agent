@@ -33,6 +33,6 @@ def test_overview_matches_the_database():
     assert ("Concerts", "Pop", 4998) in o.categories
     customers = next(a for a in o.areas if a.view == "users_public")
     assert "username" in customers.fields
-    # Private columns can't appear: the overview reads columns through the same
-    # read-only, authorizer-checked connection as the agent.
+    # The overview lists each view's real columns, so it shows exactly what the agent
+    # can query: users_public defines no names or contact details.
     assert not {"email", "phone", "firstname", "lastname"} & set(customers.fields)

@@ -110,6 +110,9 @@ class _ClaudeStep:
         except anthropic.RateLimitError as e:
             raise LLMError("The AI service is busy right now. Please try again in a minute.",
                            str(e)) from e
+        except anthropic.APITimeoutError as e:      # subclass of APIConnectionError
+            raise LLMError("The AI service took too long to respond. Please try again.",
+                           str(e)) from e
         except anthropic.APIConnectionError as e:
             raise LLMError("Couldn't reach the AI service. Check your internet connection.",
                            str(e)) from e
