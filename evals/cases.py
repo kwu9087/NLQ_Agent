@@ -46,6 +46,17 @@ def says_zero(text: str) -> bool:
     return asserts(_ZERO, text)
 
 
+# The model correcting itself in text the user sees: "4,812... I mean 4,810".
+_SELF_CORRECTION = re.compile(
+    r"\bI mean\b|\bsorry\b|\boops\b|\bcorrection:|\bwait,|\.\.\.\s*(actually|no|wait)\b"
+    r"|\bactually,? (it|that|this) (was|is)\b", re.I)
+
+
+def self_corrects(text: str) -> bool:
+    """True if the answer contains a visible self-correction. Checked on every answer."""
+    return bool(_SELF_CORRECTION.search(text))
+
+
 @dataclass
 class Case:
     id: str
@@ -172,7 +183,10 @@ CASES = [
     Case("asking_vs_paid",
          "How does the average asking price compare with the average price paid, by category?",
          ANSWERED,
-         forbid_answer=r"\b(paid|pay|paying)\b[^.]{0,30}\b(more|above|over)\b[^.]{0,40}\basking",
+         # The bare claim is misleading; the same sentence with the reason is correct
+         # ("...than the asking price, meaning pricier listings sold better").
+         forbid_answer=(r"\b(paid|pay|paying)\b[^.]{0,30}\b(more|above|over)\b[^.]{0,40}"
+                        r"\basking(?![^.]*\b(pricier|more expensive|higher-priced)\b)"),
          note="Every sale is at its asking price: a gap means pricier listings sold more, "
               "not that buyers paid above asking.",
          tags=["interpretation"]),

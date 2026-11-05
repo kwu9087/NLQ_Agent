@@ -34,7 +34,10 @@ ANSWER_PROMPT_PATH = ROOT / "prompts" / "answer_prompt.md"
 # Model (see README Part 3). Effort is the only depth control on Claude Opus 5.5.
 MODEL = os.environ.get("NLQ_MODEL", "claude-opus-5-5")
 SQL_EFFORT = os.environ.get("NLQ_SQL_EFFORT", "medium")
-ANSWER_EFFORT = os.environ.get("NLQ_ANSWER_EFFORT", "low")
+# The answer step was "low" until a measured comparison (README Part 3): at "low" it
+# sometimes corrected a figure mid-answer ("4,812... I mean 4,810"); "medium", the
+# model's default, did not, for about 1 second more per question.
+ANSWER_EFFORT = os.environ.get("NLQ_ANSWER_EFFORT", "medium")
 SQL_MAX_TOKENS = 16000
 ANSWER_MAX_TOKENS = 8000
 # Server-side refusal fallback: if the model declines, the API reruns the request

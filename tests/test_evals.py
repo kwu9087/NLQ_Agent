@@ -1,6 +1,6 @@
 """Offline tests for the accuracy checker in evals/run.py (no API calls)."""
 
-from evals.cases import CASES, asserts, says_zero
+from evals.cases import CASES, asserts, says_zero, self_corrects
 from evals.run import compare
 
 
@@ -65,3 +65,24 @@ def test_forbidden_wording_is_matched_outside_denials():
 
 def test_a_zero_next_to_unrelated_no_is_still_flagged():
     assert says_zero("No data, so revenue was $0.")
+
+
+def test_self_correction_is_flagged():
+    # The live answer that prompted this check.
+    assert self_corrects("Barclays Center, with $1,589,735.00 from 4,812... I mean 4,810 tickets.")
+    assert self_corrects("Revenue was $5M. Sorry, it was $6M.")
+    assert self_corrects("Wait, that includes January.")
+
+
+def test_ordinary_answers_are_not_flagged_as_self_corrections():
+    assert not self_corrects("Pop led with $62,434,243, followed by Plays at $25,538,940.")
+    assert not self_corrects("Every sale happens at exactly the listing's asking price.")
+    assert not self_corrects("This means the show doesn't appear in the sales records at all.")
+
+
+def test_asking_price_gap_with_the_right_explanation_is_allowed():
+    pattern = next(c for c in CASES if c.id == "asking_vs_paid").forbid_answer
+    # Live answer at medium effort: states the gap and gives the correct reason.
+    assert not asserts(pattern, "In every category, buyers paid more per ticket on average "
+                                "than the average asking price, meaning pricier listings "
+                                "sold better.")

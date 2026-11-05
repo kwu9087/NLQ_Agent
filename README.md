@@ -382,13 +382,13 @@ question
 
 **API key:** put `ANTHROPIC_API_KEY=sk-ant-...` in a `.env` file in the project root (git-ignored), or set it in the shell. A key set in the shell takes priority. If neither is set, the agent stops at startup and says so.
 
-**Settings** (environment variables, all optional): `NLQ_MODEL` (default `claude-opus-5-5`), `NLQ_SQL_EFFORT` (default `medium`), `NLQ_ANSWER_EFFORT` (default `low`), `NLQ_TODAY` (pins today's date, for tests and demos), `NLQ_DB_PATH`.
+**Settings** (environment variables, all optional): `NLQ_MODEL` (default `claude-opus-5-5`), `NLQ_SQL_EFFORT` (default `medium`), `NLQ_ANSWER_EFFORT` (default `medium`), `NLQ_TODAY` (pins today's date, for tests and demos), `NLQ_DB_PATH`.
 
 **Tests:** `pytest` runs 56 tests with no API calls. They cover the SQL check and authorizer (including private columns hidden inside a `WITH`), row limits, timeouts and empty results, every branch of the flow (using a fake model), the accuracy checker below, and the interface (Part 4).
 
 ### Accuracy test set
 
-`python -m evals.run` asks the live model 24 questions and checks each answer. The latest report, with every answer, assumption and query, is in [`evals/last_run.md`](evals/last_run.md). **Latest run: 24 of 24 passed** (Opus 5.5, SQL effort `medium`, about 5 seconds per question).
+`python -m evals.run` asks the live model 24 questions and checks each answer. The latest report, with every answer, assumption and query, is in [`evals/last_run.md`](evals/last_run.md). **Latest run: 24 of 24 passed** (Opus 5.5, effort `medium` for both steps, about 5–7 seconds per question). Every answer is also checked for visible self-corrections ("4,812... I mean 4,810").
 
 | Group | Cases | What is checked |
 |---|---:|---|
@@ -484,7 +484,13 @@ Within Claude, there are three tiers. Prices are per million tokens, input / out
 
 ### What this choice means for the code
 
-- **Thinking can't be turned off on Opus 5.5.** The control is the effort level (`low`, `medium` or `high`). We will choose it by running the test questions at each level.
+- **Thinking can't be turned off on Opus 5.5.** The model always reasons privately before it answers. Effort (`low` to `max`) sets how much, and `medium` is the default when none is given. Turning reasoning off wouldn't help here anyway: a model with no private reasoning tends to work things out in the visible answer. Other providers' reasoning models have the same kind of control ("reasoning effort", "thinking budget"), so switching models wouldn't remove the trade-off.
+- **Effort is set per step, by measurement:**
+
+  | Step | Effort | Why |
+  |---|---|---|
+  | SQL | `medium` | Passes the accuracy test set |
+  | Answer | `medium` | It was `low` at first. In live runs, `low` twice corrected a figure in the visible text ("4,812... I mean 4,810") on the same question. We then ran the 24-question test set 3 times at each level, 72 answers per level. Both levels passed 71 of 72, but `low` produced one self-correction and `medium` produced none, for about 1 second more per question (median 7.1 s vs. 6.2 s). The sample is small, but the cost is too, so the step uses the model's default. |
 - **Prompt caching depends on the order of the prompt.** The cache only reuses the part of the prompt that comes before the first change. So the unchanging part (rules, schema and examples) goes first, and anything that changes per request, such as today's date, goes at the end or in the user message.
 - **Structured output.** The response is required to match a JSON schema, so the code never has to parse free-form text.
 
