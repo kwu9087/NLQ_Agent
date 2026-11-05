@@ -46,7 +46,7 @@ SELECT
     s.buyerid                          AS buyer_id,
     s.sellerid                         AS seller_id,
     s.qtysold                          AS tickets,        -- tickets in this sale
-    s.pricepaid                        AS sale_total,     -- TOTAL paid for all tickets in this sale
+    s.pricepaid                        AS sale_total,     -- TOTAL paid for all tickets in this sale (tickets x the listing's asking price)
     s.commission                       AS commission,     -- the site's 15% fee on sale_total
     s.is_demo
 FROM sales s
@@ -71,7 +71,7 @@ SELECT
     vn.venue_id,
     vn.venue_label,
     l.numtickets                       AS tickets_listed,
-    l.priceperticket                   AS asking_price_per_ticket,
+    l.priceperticket                   AS asking_price_per_ticket, -- every sale is at exactly this price
     l.totalprice                       AS asking_total,
     COALESCE(sold.tickets, 0)          AS tickets_sold,
     l.numtickets - COALESCE(sold.tickets, 0) AS tickets_unsold,

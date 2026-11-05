@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cases import CASES, TODAY, Case, says_zero
+from .cases import CASES, TODAY, Case, asserts, says_zero
 
 os.environ.setdefault("NLQ_TODAY", TODAY)     # before the agent reads its config
 
@@ -89,6 +89,13 @@ def check(case: Case, result: AgentResult, raw: sqlite3.Connection) -> list[str]
             problems.append(f"forbidden columns returned: {bad}")
     if case.no_zero_answer and says_zero(result.answer):
         problems.append("answer presents missing data as zero")
+    if case.expect_truncated and result.status == "answered" and not result.truncated:
+        problems.append(f"result not marked as cut off ({len(result.rows)} rows returned)")
+    if case.forbid_answer and asserts(case.forbid_answer, result.answer):
+        problems.append(f"answer matches forbidden wording: {case.forbid_answer}")
+    if case.require_assumption and not any(
+            re.search(case.require_assumption, a, re.I) for a in result.assumptions):
+        problems.append(f"no assumption matches: {case.require_assumption}")
     return problems
 
 

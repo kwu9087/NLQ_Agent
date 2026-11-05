@@ -24,17 +24,26 @@ TODAY = "2026-11-04"   # data covers 2025-01-07 to 2026-01-07
 # An empty result must never be presented as zero. "No sales data was found" is the
 # honest phrasing and is allowed, and so is a denial ("not that it sold zero tickets").
 # "Sold 0 tickets" or "$0" is not.
-_ZERO = re.compile(r"\b(0|zero) (tickets|revenue|sales)\b|\$0(\.00)?\b", re.I)
+_ZERO = r"\b(0|zero) (tickets|revenue|sales)\b|\$0(\.00)?\b"
 _DENIAL = re.compile(r"\b(not|never)\b|n't", re.I)
+
+
+def asserts(pattern: str, text: str) -> bool:
+    """True if the text matches the pattern outside a denial.
+
+    "Sold 0 tickets" asserts a zero; "not that it sold zero tickets" denies it. The
+    words just before a match (and inside it) are checked for not / never / n't.
+    """
+    for match in re.finditer(pattern, text, re.I):
+        context = text[max(0, match.start() - 30):match.end()]
+        if not _DENIAL.search(context):
+            return True
+    return False
 
 
 def says_zero(text: str) -> bool:
     """True if the text presents a figure as zero, outside a denial."""
-    for match in _ZERO.finditer(text):
-        before = text[max(0, match.start() - 30):match.start()]
-        if not _DENIAL.search(before):
-            return True
-    return False
+    return asserts(_ZERO, text)
 
 
 @dataclass
@@ -46,6 +55,9 @@ class Case:
     ordered: bool = False
     forbid_columns: Optional[str] = None  # regex; no result column may match
     no_zero_answer: bool = False        # the answer must not present data as zero
+    expect_truncated: bool = False      # the result must be marked as cut off
+    forbid_answer: Optional[str] = None       # regex; the answer must not match
+    require_assumption: Optional[str] = None  # regex; some assumption must match
     note: str = ""                      # what the case tests
     tags: list[str] = field(default_factory=list)
 
@@ -151,6 +163,25 @@ CASES = [
          ordered=True,
          note="Uses the rebuilt calendar (TICKIT's weekdays were off by one in Jan-Feb).",
          tags=["dates"]),
+
+    # --- Found by the stress test -----------------------------------------------------
+    Case("large_result_cut_off", "Show me every sale for Mamma Mia!", ANSWERED,
+         expect_truncated=True,
+         note="1,815 sales: the result must be marked as cut off, not silently limited.",
+         tags=["limits"]),
+    Case("asking_vs_paid",
+         "How does the average asking price compare with the average price paid, by category?",
+         ANSWERED,
+         forbid_answer=r"\b(paid|pay|paying)\b[^.]{0,30}\b(more|above|over)\b[^.]{0,40}\basking",
+         note="Every sale is at its asking price: a gap means pricier listings sold more, "
+              "not that buyers paid above asking.",
+         tags=["interpretation"]),
+    Case("nets_behavior_caveat",
+         "How far in advance do people buy tickets for Nets games compared with musicals?",
+         ANSWERED,
+         require_assumption=r"cop(y|ied)|demo|generated|synthetic",
+         note="Nets sales timing is copied from other events, so the comparison needs a caveat.",
+         tags=["demo data"]),
 
     # --- Unclear questions -----------------------------------------------------------
     Case("clarify_vague", "How did it go?", {"clarify"},

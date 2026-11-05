@@ -1,6 +1,6 @@
 """Offline tests for the accuracy checker in evals/run.py (no API calls)."""
 
-from evals.cases import CASES, says_zero
+from evals.cases import CASES, asserts, says_zero
 from evals.run import compare
 
 
@@ -48,3 +48,20 @@ def test_zero_check_allows_honest_empty_wording():
 def test_case_ids_are_unique():
     ids = [c.id for c in CASES]
     assert len(ids) == len(set(ids))
+
+
+def test_forbidden_wording_is_matched_outside_denials():
+    pattern = next(c for c in CASES if c.id == "asking_vs_paid").forbid_answer
+    # The misleading answer from the stress test, and a variant.
+    assert asserts(pattern, "In every category, buyers paid more on average than the "
+                            "average asking price.")
+    assert asserts(pattern, "Buyers paid above the asking price.")
+    # Correct explanations are allowed.
+    assert not asserts(pattern, "Pricier listings sold more tickets, so the average paid "
+                                "is higher than the average asking price.")
+    assert not asserts(pattern, "Every sale was at its asking price: buyers never paid "
+                                "more than asking.")
+
+
+def test_a_zero_next_to_unrelated_no_is_still_flagged():
+    assert says_zero("No data, so revenue was $0.")
