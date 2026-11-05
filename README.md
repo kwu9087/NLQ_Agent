@@ -2,7 +2,7 @@
 
 A natural language query (NLQ) agent that lets a non-technical user ask questions about ticketing data in plain English. The agent turns the question into SQL, runs it against a database, and returns a readable answer together with the SQL it ran.
 
-> **Status:** Draft. The README follows the five numbered requirements in the brief: **Part 1 (Data Layer)** is complete, **Part 2 (Agent Behavior)** is being designed, and Parts 3–5 (Foundation Model, Interface, Code Quality) are not started yet.
+> **Status:** Draft. The README follows the five numbered requirements in the brief. **Parts 1–4** (Data Layer, Agent Behavior, Foundation Model, Interface) are built and tested. **Part 5** (Code Quality: setup guide, review and submission notes) is in progress.
 
 ---
 
@@ -383,7 +383,7 @@ question
 
 **Settings** (environment variables, all optional): `NLQ_MODEL` (default `claude-opus-5-5`), `NLQ_SQL_EFFORT` (default `medium`), `NLQ_ANSWER_EFFORT` (default `low`), `NLQ_TODAY` (pins today's date, for tests and demos), `NLQ_DB_PATH`.
 
-**Tests:** `pytest` runs 39 tests with no API calls. They cover the SQL check and authorizer (including private columns hidden inside a `WITH`), row limits, timeouts and empty results, every branch of the flow (using a fake model), and the accuracy checker below.
+**Tests:** `pytest` runs 56 tests with no API calls. They cover the SQL check and authorizer (including private columns hidden inside a `WITH`), row limits, timeouts and empty results, every branch of the flow (using a fake model), the accuracy checker below, and the interface (Part 4).
 
 ### Accuracy test set
 
@@ -476,7 +476,7 @@ Within Claude, there are three tiers. Prices are per million tokens, input / out
 
 ## Part 4: Interface
 
-> **Designed, not built yet.**
+> **Built** in [`app.py`](app.py). Run it with `streamlit run app.py`, which opens `http://localhost:8501`.
 
 **Choice: a single-page [Streamlit](https://streamlit.io) web app.** The user types a question in a browser and gets back the answer, the data behind it and the SQL. They never touch a terminal, SQL or the database.
 
@@ -519,13 +519,20 @@ The goal is a clean, professional page, achieved only through the parts of Strea
 
 - **Theme** in `.streamlit/config.toml`: colors and font, set in one place
 - **Layout:** a narrow, centered page with bordered cards that group the answer, assumptions and details
-- **Automatic charts**, chosen by the shape of the result: one value becomes a large number, labels with numbers become a bar chart, and dates become a line chart
+- **Automatic charts**, chosen by the shape of the result ([`ui/display.py`](ui/display.py)):
+  - A one-row result shows its figures as large numbers.
+  - A ranking or breakdown becomes a horizontal bar chart, kept in ranking order.
+  - Values over time become a line chart.
+  - A ranking that happens to have a date on each row ("top games by price") is still a ranking, so it gets bars, not a timeline. A first version drew it as a line over the game dates, which the live test caught. When names repeat (two games against the Rockets), each bar is labelled with its date.
+  - No chart for more than 25 bars or for results without numbers.
 - **No custom CSS.** It depends on Streamlit's internal class names, which change between versions, so it breaks without warning
 - **No BSE or Nets logos or names**, so the page doesn't pass for an official BSE product
 
 ### Separation from the agent
 
-The agent returns one result object (action, answer, explanation, assumptions, SQL, rows, error) and knows nothing about Streamlit. `app.py` only draws that object. The test scripts (Part 5) call the same agent function directly. That is how we check accuracy, not a user interface.
+The agent returns one result object (action, answer, explanation, assumptions, SQL, rows, error) and knows nothing about Streamlit. `app.py` only draws that object. Display decisions (chart type, headline figures, money formatting) are in `ui/display.py`, which has no Streamlit import, so they are tested on their own. The accuracy test set calls the same agent function directly, with no interface.
+
+**Tests:** `tests/test_display.py` covers the chart choices, including the live result shapes above. `tests/test_app.py` runs the page headlessly with Streamlit's `AppTest` and a fake agent: one test for each kind of response, plus the example buttons and a missing API key, which shows a setup message instead of crashing.
 
 ### Limitations
 
@@ -565,6 +572,11 @@ NLQ_Agent/
 │   ├── cases.py      # Questions, expected outcomes, reference SQL on the raw tables
 │   ├── run.py        # Runner: python -m evals.run
 │   └── last_run.md   # Report from the latest run: every answer, assumption and query
+├── ui/
+│   └── display.py    # Chart choice and formatting (no Streamlit import)
+├── .streamlit/
+│   └── config.toml   # Page theme
+├── app.py            # Streamlit page (Part 4): streamlit run app.py
 ├── tests/            # Offline tests (no API calls): pytest
 ├── .gitattributes    # Keeps raw files byte-identical (no line-ending conversion)
 ├── .gitignore
